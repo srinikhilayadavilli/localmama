@@ -221,8 +221,9 @@ class LeadRecorder:
             # Same handoff as the deterministic pipeline, after the lead is
             # already durable. Skips with a log line when unconfigured or when
             # the transport gave us no phone number.
-            from .services import whatsapp
+            from .services import lead_store, whatsapp
 
+            lead_store.save(lead, caller_phone=rec.caller_id or "")
             whatsapp.fire(lead, phone=rec.caller_id or "")
 
             from . import caller_profiles
@@ -232,10 +233,6 @@ class LeadRecorder:
                 "session=%s  LEAD SAVED: %s / %s / %s (%s)",
                 rec._short(), s.user_name, s.requested_service, s.city_or_area,
                 s.selected_language.value if s.selected_language else "?",
-            )
-            logger.info(
-                "session=%s  [SIMULATED WHATSAPP] would send %s details in %s to %s",
-                rec._short(), s.requested_service, s.city_or_area, s.user_name,
             )
             return "Lead saved. Thank the caller and close the call warmly."
 

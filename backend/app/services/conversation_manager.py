@@ -33,7 +33,14 @@ from ..persistence import save_lead, save_transcript
 from ..prompts.messages import MessageKey, get_message
 from ..security import TurnLimiter, sanitize_field, sanitize_utterance
 from ..state_machine import REQUIRED_FIELD, missing_fields, next_state
-from . import confirmation, response_generator, response_guard, smalltalk, whatsapp
+from . import (
+    confirmation,
+    lead_store,
+    response_generator,
+    response_guard,
+    smalltalk,
+    whatsapp,
+)
 from .entity_extractor import (
     MIN_CONFIDENCE,
     UNKNOWN_SERVICE_CONFIDENCE,
@@ -773,6 +780,9 @@ class ConversationManager:
         # Real handoff when configured, a logged no-op otherwise. Fired after
         # the lead is already on disk, and fire-and-forget, so a slow or broken
         # provider costs the caller nothing and loses nothing.
+        # Durable copy. DATA_DIR is container-local on both hosts, so the JSON
+        # write alone meant real leads vanished on the next deploy.
+        lead_store.save(lead, caller_phone=self.caller_id or "")
         whatsapp.fire(lead, phone=self.caller_id or "")
 
         reply = f"{confirmation} {closing}"

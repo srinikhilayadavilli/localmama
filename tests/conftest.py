@@ -24,3 +24,9 @@ def _offline_by_default(monkeypatch):
     monkeypatch.setattr(
         Settings, "natural_replies_available", property(lambda self: False)
     )
+    # And no database. `.env` carries a real DATABASE_URL, so without this the
+    # suite wrote its fixture leads — "Ravi / plumber / Pune" — straight into
+    # the shared production Neon instance, and every brain lookup in a test hit
+    # the network. Blank means lead_store and brain both report unavailable and
+    # degrade exactly as they do on a host with no database configured.
+    monkeypatch.setattr(Settings, "database_url", "", raising=False)
