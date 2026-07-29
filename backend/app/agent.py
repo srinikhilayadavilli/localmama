@@ -235,12 +235,39 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.info("session=%s  call complete", session_id[:8])
                 session_store.drop(session_id)
 
+    #: Strong references to in-flight turn tasks.
+    #:
+    #: asyncio only keeps a *weak* reference to a task, so one created and left
+    #: unreferenced can be garbage-collected mid-await. The turn then stops
+    #: wherever it happened to be — after the state machine has committed the
+    #: field and logged the transition, but before `session.say()` — and the
+    #: caller hears nothing at all. Nothing is raised and nothing is logged,
+    #: which is what made "after saying the name nothing happens" so hard to
+    #: see: the logs show a reply being produced and no error anywhere.
+    pending_turns: set[asyncio.Task] = set()
+
+    def _turn_finished(task: asyncio.Task) -> None:
+        pending_turns.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            # Previously this exception went nowhere: the task result was never
+            # retrieved, so the caller just got silence.
+            logger.exception(
+                "session=%s  turn failed; caller heard nothing",
+                session_id[:8],
+                exc_info=exc,
+            )
+
     @session.on("user_input_transcribed")
     def on_transcript(event) -> None:  # noqa: ANN001 - LiveKit event object
         if not event.is_final or not event.transcript.strip():
             return
         logger.info("session=%s  user: %s", session_id[:8], event.transcript)
-        asyncio.create_task(handle_utterance(event.transcript))
+        task = asyncio.create_task(handle_utterance(event.transcript))
+        pending_turns.add(task)
+        task.add_done_callback(_turn_finished)
 
     await session.start(agent=agent, room=ctx.room)
 
