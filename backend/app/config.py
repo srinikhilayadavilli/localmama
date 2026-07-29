@@ -89,6 +89,14 @@ class Settings:
     hangup_grace_seconds: float = field(
         default_factory=lambda: float(_env("HANGUP_GRACE_SECONDS", "1.5"))
     )
+    #: How often the worker retries WhatsApp handoffs that never got through.
+    #: 0 disables it. The startup sweep alone leaves a gap that matters: if the
+    #: provider recovers an hour into a deployment, nothing goes out until the
+    #: next restart.
+    outbox_sweep_seconds: float = field(
+        default_factory=lambda: float(_env("OUTBOX_SWEEP_SECONDS", "300"))
+    )
+
     #: How long shutdown waits for post-call work — the durable write and the
     #: WhatsApp attempt — before giving up on it. Anything unfinished is left
     #: in the outbox rather than lost, so this is a latency bound on shutdown,

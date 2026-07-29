@@ -152,6 +152,57 @@ def mark_whatsapp(session_id: str, ok: bool, error: str = "") -> None:
         logger.warning("could not record whatsapp status: %s", exc)
 
 
+def claim_whatsapp(limit: int = 50, max_attempts: int = 25,
+                   stale_after_minutes: int = 10) -> list[dict]:
+    """Take ownership of owed handoffs, atomically, and return them.
+
+    A periodic sweep runs unattended, and a second worker sweeping at the same
+    moment would send the same customer the same message twice. So rows are
+    claimed rather than merely read: one `UPDATE ... RETURNING` moves them from
+    `pending` to `sending`, and Postgres decides who wins.
+
+    A claim that is never resolved — the process died mid-send — would strand
+    the lead in `sending` forever, so anything stuck there longer than
+    `stale_after_minutes` is treated as owed again. That risks a duplicate
+    message in the narrow window where a send succeeded but the result was
+    never recorded; a duplicate is recoverable, a lead silently never sent is
+    not.
+    """
+    if not available():
+        return []
+    try:
+        with _connect() as conn:
+            _ensure_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE localmama.leads SET whatsapp_status = 'sending',"
+                    " whatsapp_at = now()"
+                    " WHERE session_id IN ("
+                    "   SELECT session_id FROM localmama.leads"
+                    "   WHERE agent_id = %s AND caller_phone IS NOT NULL"
+                    "     AND whatsapp_attempts < %s"
+                    "     AND (whatsapp_status = 'pending'"
+                    "          OR (whatsapp_status = 'sending'"
+                    "              AND whatsapp_at < now() - make_interval(mins => %s)))"
+                    "   ORDER BY created_at"
+                    "   FOR UPDATE SKIP LOCKED"
+                    "   LIMIT %s)"
+                    " RETURNING session_id, caller_phone, name, service, city,"
+                    "           language, whatsapp_attempts",
+                    (settings.brain_agent_id, max_attempts, stale_after_minutes, limit),
+                )
+                cols = ["session_id", "caller_phone", "name", "service", "city",
+                        "language", "attempts"]
+                claimed = [dict(zip(cols, row)) for row in cur.fetchall()]
+            conn.commit()
+        if claimed:
+            logger.info("outbox: claimed %d owed handoff(s)", len(claimed))
+        return claimed
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not claim from the outbox: %s", exc)
+        return []
+
+
 def pending_whatsapp(limit: int = 50, max_attempts: int = 25) -> list[dict]:
     """Leads still owed a WhatsApp message, oldest first.
 
@@ -168,7 +219,8 @@ def pending_whatsapp(limit: int = 50, max_attempts: int = 25) -> list[dict]:
                 cur.execute(
                     "SELECT session_id, caller_phone, name, service, city, language,"
                     " whatsapp_attempts FROM localmama.leads"
-                    " WHERE agent_id = %s AND whatsapp_status = 'pending'"
+                    " WHERE agent_id = %s"
+                    "   AND whatsapp_status IN ('pending', 'sending')"
                     "   AND caller_phone IS NOT NULL"
                     "   AND whatsapp_attempts < %s"
                     " ORDER BY created_at LIMIT %s",

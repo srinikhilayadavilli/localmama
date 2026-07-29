@@ -302,6 +302,22 @@ def main() -> None:
             "the worker will fail to connect. See README 'LiveKit voice path'."
         )
 
+    # Handoffs owed from earlier calls, retried on start and then on a timer.
+    # Both workers do this: whichever one is deployed owns the outbox.
+    import asyncio
+
+    from .outbox import drain, start_periodic_sweep
+    from .services import lead_store
+
+    if lead_store.available():
+        try:
+            sent, failed = asyncio.run(drain())
+            if sent or failed:
+                logger.info("outbox on startup: sent %d, still owed %d", sent, failed)
+        except Exception as exc:  # noqa: BLE001 - never block the worker starting
+            logger.warning("outbox sweep skipped: %s", exc)
+        start_periodic_sweep()
+
     # Prove the voice works before taking calls. Without this the worker starts
     # happily, registers, accepts a job, and only then discovers it has no TTS —
     # so every caller joins and hears silence, and the only clue is one line

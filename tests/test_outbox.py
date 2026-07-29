@@ -55,7 +55,7 @@ async def test_a_failed_send_stays_owed(monkeypatch) -> None:
     from backend.app import outbox
     from backend.app.services import lead_store, whatsapp
 
-    monkeypatch.setattr(lead_store, "pending_whatsapp", lambda **k: [_row()])
+    monkeypatch.setattr(lead_store, "claim_whatsapp", lambda **k: [_row()])
     marks: list = []
     monkeypatch.setattr(lead_store, "mark_whatsapp",
                         lambda sid, ok, error="": marks.append((sid, ok, error)))
@@ -75,7 +75,7 @@ async def test_a_successful_send_is_recorded_as_terminal(monkeypatch) -> None:
     from backend.app import outbox
     from backend.app.services import lead_store, whatsapp
 
-    monkeypatch.setattr(lead_store, "pending_whatsapp", lambda **k: [_row()])
+    monkeypatch.setattr(lead_store, "claim_whatsapp", lambda **k: [_row()])
     marks: list = []
     monkeypatch.setattr(lead_store, "mark_whatsapp",
                         lambda sid, ok, error="": marks.append((sid, ok, error)))
@@ -95,7 +95,7 @@ async def test_nothing_owed_is_not_an_error(monkeypatch) -> None:
     from backend.app import outbox
     from backend.app.services import lead_store
 
-    monkeypatch.setattr(lead_store, "pending_whatsapp", lambda **k: [])
+    monkeypatch.setattr(lead_store, "claim_whatsapp", lambda **k: [])
     assert await outbox.drain() == (0, 0)
 
 
@@ -108,3 +108,49 @@ def test_no_phone_is_skipped_not_retried_forever() -> None:
 
     source = inspect.getsource(lead_store.mark_whatsapp)
     assert '"skipped"' in source and 'error == "no phone"' in source
+
+
+def test_the_sweep_is_disabled_without_a_database(monkeypatch) -> None:
+    """conftest blanks DATABASE_URL — a worker with no outbox must not spawn a
+    thread that wakes every five minutes to do nothing."""
+    from backend.app import outbox
+
+    assert outbox.start_periodic_sweep() is None
+
+
+def test_the_sweep_can_be_turned_off(monkeypatch) -> None:
+    from backend.app import outbox
+    from backend.app.config import settings
+    from backend.app.services import lead_store
+
+    monkeypatch.setattr(lead_store, "available", lambda: True)
+    object.__setattr__(settings, "outbox_sweep_seconds", 0.0)
+    try:
+        assert outbox.start_periodic_sweep() is None
+    finally:
+        object.__setattr__(settings, "outbox_sweep_seconds", 300.0)
+
+
+def test_claiming_is_atomic_not_a_plain_read() -> None:
+    """Two workers sweeping at the same moment must not send one customer the
+    same message twice, so rows are claimed with UPDATE ... RETURNING and
+    Postgres decides who wins."""
+    import inspect
+
+    from backend.app.services import lead_store
+
+    source = inspect.getsource(lead_store.claim_whatsapp)
+    assert "FOR UPDATE SKIP LOCKED" in source
+    assert "RETURNING" in source
+    assert "'sending'" in source
+
+
+def test_a_stranded_claim_is_reclaimed() -> None:
+    """A process that dies mid-send would otherwise strand the lead in
+    'sending' forever. A duplicate message is recoverable; a lead that is
+    silently never sent is not."""
+    import inspect
+
+    from backend.app.services import lead_store
+
+    assert "stale_after_minutes" in inspect.getsource(lead_store.claim_whatsapp)

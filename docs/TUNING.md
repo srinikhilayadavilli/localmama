@@ -150,9 +150,17 @@ send succeeds (`sent`) or there was no number to send to (`skipped`).
 - Shutdown waits up to `SHUTDOWN_DRAIN_SECONDS` (10). The agent hangs up ~1.5s
   after the outro and the process exits, while a WhatsApp attempt takes several
   seconds — so this work was being killed mid-flight.
-- The worker drains the outbox **on startup**, and `make outbox` reports what is
-  owed. Retries stop after 25 attempts so a permanently bad number is not tried
-  forever.
+- The worker drains the outbox **on startup and every `OUTBOX_SWEEP_SECONDS`**
+  (300), so a provider that recovers mid-deployment does not wait for a restart.
+  `make outbox` reports what is owed. Retries stop after 25 attempts so a
+  permanently bad number is not tried forever.
+- Rows are **claimed**, not just read — `UPDATE ... RETURNING` with `FOR UPDATE
+  SKIP LOCKED` — so two replicas sweeping at once take disjoint batches. A claim
+  stranded by a dead process is reclaimed after 10 minutes: a duplicate message
+  is recoverable, a lead silently never sent is not.
+- The sweep runs in a daemon thread, safe because LiveKit spawns job processes
+  with `spawn`/`forkserver` rather than plain `fork`, so a call in progress never
+  inherits it.
 
 Three in-call retries were the wrong shape for the actual failure — a provider
 down for hours wants trying again later, not trying harder now.

@@ -12,10 +12,10 @@ So the outbox state lives on the lead row in Postgres rather than in a process
 that dies when the caller hangs up. `whatsapp_status` is `pending` until a send
 succeeds (`sent`) or there was no number to send to (`skipped`).
 
-This runs at worker startup and can be run by hand or from cron. It is safe to
-run concurrently with live calls: each lead is updated by primary key, and a
-send that succeeds twice is a duplicate message, not a corrupt record — which is
-why `sent` is only ever written after the provider confirms.
+It runs at worker startup, then every `OUTBOX_SWEEP_SECONDS`, and can be run by
+hand. Safe to run concurrently: rows are *claimed* with `UPDATE ... RETURNING`
+and `FOR UPDATE SKIP LOCKED`, so two workers sweeping at the same moment take
+disjoint batches rather than sending one customer the same message twice.
 """
 
 from __future__ import annotations
@@ -23,7 +23,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import time
 
+from .config import settings
 from .logger import get_logger, setup_logging
 from .models import ConversationStatus, Lead, utcnow
 from .services import lead_store, whatsapp
@@ -60,8 +62,12 @@ def _as_lead(row: dict) -> Lead:
 
 
 async def drain(limit: int = 50) -> tuple[int, int]:
-    """Retry every owed handoff. Returns (sent, still_failing)."""
-    owed = lead_store.pending_whatsapp(limit=limit)
+    """Retry every owed handoff. Returns (sent, still_failing).
+
+    Claims rows before sending, so two workers sweeping at the same moment
+    cannot send one customer the same message twice.
+    """
+    owed = lead_store.claim_whatsapp(limit=limit)
     if not owed:
         return 0, 0
 
@@ -83,29 +89,44 @@ async def drain(limit: int = 50) -> tuple[int, int]:
     return sent, failed
 
 
-def drain_in_background() -> None:
-    """Fire the sweep from an already-running worker, without blocking startup.
+def start_periodic_sweep() -> "threading.Thread | None":
+    """Retry owed handoffs on a timer, for the life of the worker.
 
-    A worker that cannot reach the provider must still take calls, so this never
-    waits and never raises into the caller.
+    Runs in a daemon thread rather than the worker's event loop. LiveKit
+    creates job processes with `spawn`/`forkserver`, never plain `fork`, so a
+    thread here is not inherited by a call in progress and cannot interfere
+    with one.
+
+    The startup sweep alone left a gap that matters: if the provider recovers
+    an hour into a deployment, nothing goes out until the next restart. This
+    closes it without needing a scheduler the deployment does not have.
+
+    Returns None when disabled or unconfigured, so the caller can log which.
     """
-    if not (lead_store.available() and whatsapp_configured()):
-        return
-    try:
-        task = asyncio.get_running_loop().create_task(drain())
-    except RuntimeError:
-        return  # no loop yet; the CLI entry point covers that case
-    _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    import threading
 
+    interval = settings.outbox_sweep_seconds
+    if interval <= 0 or not lead_store.available():
+        return None
 
-#: Strong refs, so a sweep is not collected mid-flight.
-_tasks: set = set()
+    def _loop() -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                # Its own event loop: this thread is not the worker's.
+                sent, failed = asyncio.run(drain())
+                if sent or failed:
+                    logger.info("outbox sweep: sent %d, still owed %d", sent, failed)
+            except Exception as exc:  # noqa: BLE001 - a sweep must never kill the worker
+                logger.warning("outbox sweep failed: %s", exc)
+
+    thread = threading.Thread(target=_loop, name="outbox-sweep", daemon=True)
+    thread.start()
+    logger.info("outbox sweep every %.0fs", interval)
+    return thread
 
 
 def whatsapp_configured() -> bool:
-    from .config import settings
-
     return settings.whatsapp_available
 
 
