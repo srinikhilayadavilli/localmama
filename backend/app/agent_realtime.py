@@ -38,6 +38,7 @@ from __future__ import annotations
 from livekit import agents
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext
 
+from . import telephony
 from .config import settings
 from .logger import get_logger, setup_logging
 from .prompts.voice_style import GREETING_STT_PROMPT, realtime_accent_instructions
@@ -227,7 +228,9 @@ async def entrypoint(ctx: JobContext) -> None:
     setup_logging()
     await ctx.connect()
 
-    recorder = LeadRecorder()
+    participant = await ctx.wait_for_participant()
+    phone = telephony.caller_id(participant)
+    recorder = LeadRecorder(caller_id=phone or None)
     prefilled = prefill_from_profile(recorder)
     if prefilled:
         logger.info("session=%s  returning caller, prefilled %s",

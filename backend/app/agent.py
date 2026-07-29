@@ -23,7 +23,7 @@ from livekit.agents import (
     TurnHandlingOptions,
 )
 
-from . import session_store
+from . import session_store, telephony
 from .config import settings
 from .languages import LOCALE, Language, iso639_1
 from .logger import get_logger, setup_logging
@@ -132,9 +132,18 @@ async def entrypoint(ctx: JobContext) -> None:
     setup_logging()
     await ctx.connect()
 
-    manager = session_store.create()
+    # Wait for the caller before building anything: a SIP call carries the
+    # caller's number on the participant, and that is what enables the WhatsApp
+    # handoff and returning-caller memory. Browser callers simply have none.
+    participant = await ctx.wait_for_participant()
+    phone = telephony.caller_id(participant)
+
+    manager = session_store.create(caller_id=phone or None)
     session_id = manager.session.session_id
-    logger.info("session=%s  room=%s  starting", session_id[:8], ctx.room.name)
+    logger.info(
+        "session=%s  room=%s  caller=%s  starting",
+        session_id[:8], ctx.room.name, telephony.mask(phone) or "(anonymous)",
+    )
 
     default_language = Language.ENGLISH
     stt = build_stt(default_language)

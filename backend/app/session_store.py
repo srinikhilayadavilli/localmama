@@ -15,9 +15,19 @@ from .services.conversation_manager import ConversationManager
 _SESSIONS: dict[str, ConversationManager] = {}
 
 
-def create(session_id: str | None = None) -> ConversationManager:
+def create(
+    session_id: str | None = None, caller_id: str | None = None
+) -> ConversationManager:
+    """Start a session.
+
+    `caller_id` is the caller's phone number when the transport supplies one —
+    SIP does, browsers do not. It keys returning-caller memory and is the
+    recipient for the WhatsApp handoff; None simply leaves both dormant.
+    """
     session_id = session_id or str(uuid.uuid4())
-    manager = ConversationManager(SessionData(session_id=session_id))
+    manager = ConversationManager(
+        SessionData(session_id=session_id), caller_id=caller_id
+    )
     _SESSIONS[session_id] = manager
     return manager
 
