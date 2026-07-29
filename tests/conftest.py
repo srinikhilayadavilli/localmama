@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.app.config import Settings
+from backend.app.config import Settings, settings
 
 
 @pytest.fixture(autouse=True)
@@ -29,4 +29,13 @@ def _offline_by_default(monkeypatch):
     # the shared production Neon instance, and every brain lookup in a test hit
     # the network. Blank means lead_store and brain both report unavailable and
     # degrade exactly as they do on a host with no database configured.
-    monkeypatch.setattr(Settings, "database_url", "", raising=False)
+    #
+    # Patched on the INSTANCE, unlike the two properties above. `database_url`
+    # is a dataclass field, so it lives in the instance __dict__ and a
+    # class-level patch is simply shadowed — which is how the first attempt at
+    # this silently kept writing to production. `settings` is frozen, hence
+    # object.__setattr__ rather than monkeypatch.
+    original_dsn = settings.database_url
+    object.__setattr__(settings, "database_url", "")
+    yield
+    object.__setattr__(settings, "database_url", original_dsn)
