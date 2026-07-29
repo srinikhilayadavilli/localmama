@@ -271,3 +271,53 @@ async def test_state_line_lists_what_is_outstanding():
     assert "STILL NEEDED" in reply
     for field in ("service", "city"):
         assert field in reply.split("STILL NEEDED")[1]
+
+
+@pytest.mark.asyncio
+async def test_save_lead_does_not_make_the_caller_wait(isolated):
+    """The caller sits in silence until this tool returns.
+
+    Measured on a real call, doing the durable write, the knowledge-base lookup
+    and the WhatsApp send inline cost 15.26s of dead air before Mami could say
+    goodbye — a synchronous psycopg round trip, a cold embedding model, then
+    three retries against a provider that is down. None of it has to finish
+    before she speaks, and the lead is already on disk.
+    """
+    import asyncio
+    import time
+
+    rec = LeadRecorder(caller_id="+919739960092")
+    t = tools(rec)
+    await t["set_language"](language="telugu")
+    await t["set_name"](name="Ravi")
+    await t["set_service"](service="electrician")
+    await t["set_city"](city="Hyderabad")
+
+    started = time.perf_counter()
+    reply = await t["save_lead"]()
+    elapsed = time.perf_counter() - started
+
+    assert "saved" in reply.lower()
+    assert elapsed < 1.0, f"save_lead blocked the caller for {elapsed:.2f}s"
+    # The remaining work must be scheduled, not skipped.
+    assert rec.background, "post-call work was dropped rather than backgrounded"
+    await asyncio.gather(*rec.background, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_background_work_is_referenced_until_it_finishes(isolated):
+    """asyncio keeps only a weak reference to a task; an unreferenced one can be
+    collected mid-await and the lead would never reach Postgres."""
+    import asyncio
+
+    rec = LeadRecorder()
+    t = tools(rec)
+    await t["set_language"](language="english")
+    await t["set_name"](name="Ravi")
+    await t["set_service"](service="plumber")
+    await t["set_city"](city="Pune")
+    await t["save_lead"]()
+
+    assert len(rec.background) == 1
+    await asyncio.gather(*rec.background, return_exceptions=True)
+    assert not rec.background, "the done callback must release the reference"

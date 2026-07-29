@@ -48,6 +48,8 @@ class LeadRecorder:
         #: A language change requested once but not yet confirmed by the
         #: caller. Cleared on any successful set.
         self.pending_language = None
+        #: Strong refs to post-call work, so asyncio cannot collect it.
+        self.background: set = set()
 
     # -- helpers ---------------------------------------------------------
 
@@ -298,30 +300,45 @@ class LeadRecorder:
             s.conversation_status = ConversationStatus.COMPLETED
             s.completed_at = utcnow()
             lead = s.to_lead()
+            # Local JSON only — a file write, fast enough to keep inline.
             save_lead(lead)
             save_transcript(s)
             rec.saved = True
 
-            # Same handoff as the deterministic pipeline, after the lead is
-            # already durable. Skips with a log line when unconfigured or when
-            # the transport gave us no phone number.
-            from .services import brain, lead_store, whatsapp
-
-            lead_store.save(lead, caller_phone=rec.caller_id or "")
-
-            # Name the businesses we actually matched in template param {{4}}
-            # instead of the generic "our team is shortlisting" line. The
-            # lookup already ran during the call, so this is warm; it is also
-            # after the lead is durable, and an empty result just falls back.
-            options = ""
-            if s.requested_service:
-                hits = await brain.retrieve_async(s.requested_service, city=s.city_or_area)
-                options = brain.options_line(hits)
-            whatsapp.fire(lead, phone=rec.caller_id or "", options=options)
-
             from . import caller_profiles
 
             caller_profiles.remember(rec.caller_id, s)
+
+            # Everything else happens AFTER this tool returns.
+            #
+            # The caller is waiting in silence for the whole duration of this
+            # call: the model cannot speak its closing line until the tool
+            # answers. Doing the durable write, the knowledge-base lookup and
+            # the WhatsApp send inline cost 15 seconds of dead air on a real
+            # call — a synchronous psycopg round trip, a cold embedding model,
+            # then three WhatsApp retries against a provider that is down.
+            #
+            # None of it needs to be finished before she says goodbye, and the
+            # lead is already on disk, so a failure here loses nothing.
+            async def _finish_in_background() -> None:
+                from .services import brain, lead_store, whatsapp
+
+                await asyncio.to_thread(
+                    lead_store.save, lead, rec.caller_id or ""
+                )
+                options = ""
+                if s.requested_service:
+                    hits = await brain.retrieve_async(
+                        s.requested_service, city=s.city_or_area
+                    )
+                    options = brain.options_line(hits)
+                whatsapp.fire(lead, phone=rec.caller_id or "", options=options)
+
+            task = asyncio.create_task(_finish_in_background())
+            # Held, or asyncio may collect it mid-await and the lead never
+            # reaches Postgres — the same failure that once swallowed turns.
+            rec.background.add(task)
+            task.add_done_callback(rec.background.discard)
             logger.info(
                 "session=%s  LEAD SAVED: %s / %s / %s (%s)",
                 rec._short(), s.user_name, s.requested_service, s.city_or_area,
