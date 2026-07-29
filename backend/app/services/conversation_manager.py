@@ -91,6 +91,8 @@ class ConversationManager:
         #: keyed by the exact template text it was generated from.
         self._prefetched: dict[str, str] = {}
         self._prefetch_task: asyncio.Task | None = None
+        #: Strong refs to post-call work so asyncio cannot collect it.
+        self._background: set = set()
 
     # ------------------------------------------------------------------ #
 
@@ -777,16 +779,42 @@ class ConversationManager:
             lead.city_or_area,
             lead.selected_language.value if lead.selected_language else "?",
         )
-        # Real handoff when configured, a logged no-op otherwise. Fired after
-        # the lead is already on disk, and fire-and-forget, so a slow or broken
-        # provider costs the caller nothing and loses nothing.
-        # Durable copy. DATA_DIR is container-local on both hosts, so the JSON
-        # write alone meant real leads vanished on the next deploy.
-        lead_store.save(lead, caller_phone=self.caller_id or "")
-        whatsapp.fire(lead, phone=self.caller_id or "")
+        # Everything remote happens after this returns.
+        #
+        # The caller is listening to silence until the closing line is spoken,
+        # and both of these reach the network: a psycopg round trip to Neon and
+        # an HTTPS POST that retries three times when the provider is down. Run
+        # inline they cost the caller seconds — measured at 15s on the
+        # speech-to-speech path before the same fix was applied there.
+        #
+        # The lead is already on disk above, so nothing is lost if either fails.
+        self._finish_durably(lead)
 
         reply = f"{confirmation} {closing}"
         return self._result(reply, lead=lead, final=True)
+
+
+    def _finish_durably(self, lead) -> None:  # noqa: ANN001 - models.Lead
+        """Persist to Postgres and hand off to WhatsApp, off the caller's clock.
+
+        Falls back to running inline when there is no event loop — the CLI and
+        the tests call this synchronously, and there a blocking write is
+        correct rather than merely tolerable.
+        """
+        async def _run() -> None:
+            await asyncio.to_thread(lead_store.save, lead, self.caller_id or "")
+            whatsapp.fire(lead, phone=self.caller_id or "")
+
+        try:
+            task = asyncio.create_task(_run())
+        except RuntimeError:
+            lead_store.save(lead, caller_phone=self.caller_id or "")
+            whatsapp.fire(lead, phone=self.caller_id or "")
+            return
+        # Held: asyncio keeps only a weak reference, and a collected task means
+        # the lead silently never reaching Postgres.
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     def _render(self, key: MessageKey) -> str:
         session = self.session

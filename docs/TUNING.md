@@ -79,6 +79,14 @@ all six languages — a caller who wants Telugu simply says "Telugu", and
 `LANGUAGE_NOT_UNDERSTOOD` still lists them for anyone who did not answer. And
 the prompt now states that a long reply *is* dead air.
 
+Nothing durable runs on the caller's clock. Persisting to Postgres and the
+WhatsApp handoff both reach the network — a psycopg round trip and an HTTPS
+POST that retries three times when the provider is down — and the model cannot
+speak its closing line until the turn returns. Inline, that measured **15.26s**
+of silence before the goodbye. Both paths now write the lead to disk, return,
+and finish the remote work in a background task. Measured after: **2ms** on the
+speech-to-speech path.
+
 On the deterministic path, phrasing is prefetched with placeholders
 (`{{NAME}}`, `{{SERVICE}}`, `{{LOCATION}}`) so it can be generated before the
 caller supplies the values. Hit rate went 1-in-6 → 3-in-5, and total phrasing

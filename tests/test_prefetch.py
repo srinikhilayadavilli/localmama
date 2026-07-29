@@ -246,3 +246,49 @@ def test_prediction_key_matches_the_lookup_key():
         name="Ravi", service="plumber", location="Madhapur",
     )
     assert m._placeholder_form(actual) == predicted
+
+
+@pytest.mark.asyncio
+async def test_finalising_a_lead_does_not_block_on_the_network(natural_on, monkeypatch):
+    """The caller hears silence until the closing line is spoken.
+
+    Both durable steps reach the network — a psycopg round trip to Neon and an
+    HTTPS POST that retries three times when the provider is down. Measured at
+    15s of dead air on the speech-to-speech path before the same fix landed
+    there. The lead is on disk before either runs, so nothing is lost if they
+    fail.
+    """
+    import asyncio
+    import time
+
+    from backend.app.services import lead_store, whatsapp
+
+    async def fake_phrasing(**kwargs):
+        return None
+
+    monkeypatch.setattr(response_generator, "generate", fake_phrasing)
+
+    slow_calls = {"n": 0}
+
+    def slow_save(lead, caller_phone=""):
+        slow_calls["n"] += 1
+        time.sleep(0.6)          # stand-in for a slow database
+        return True
+
+    monkeypatch.setattr(lead_store, "save", slow_save)
+    monkeypatch.setattr(whatsapp, "fire", lambda *a, **k: None)
+
+    m = manager()
+    m.start()
+    for text in ("English", "my name is Ravi", "plumber", "Hyderabad"):
+        await m.handle(text)
+
+    started = time.perf_counter()
+    result = await m.handle("yes")
+    elapsed = time.perf_counter() - started
+
+    assert result.is_final
+    assert elapsed < 0.4, f"the caller waited {elapsed:.2f}s on a slow database"
+
+    await asyncio.gather(*m._background, return_exceptions=True)
+    assert slow_calls["n"] == 1, "the write must still happen, just not inline"
