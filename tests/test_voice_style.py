@@ -74,7 +74,34 @@ def test_instructions_name_the_language(language: Language) -> None:
 def test_greeting_prompt_asserts_no_single_language() -> None:
     """The opening turn may arrive in any of the six, so none may be pinned."""
     assert "Telugu" in GREETING_STT_PROMPT and "Hindi" in GREETING_STT_PROMPT
-    assert "plumber" in GREETING_STT_PROMPT
+
+
+#: Words that must never appear in an STT prompt. Whisper-family models emit
+#: prompt content as transcription on silence, so anything here would arrive as
+#: a phantom turn — and these are shaped exactly like values the state machine
+#: captures, so a phantom would be committed as a real name or service.
+_FORBIDDEN_IN_STT_PROMPTS = (
+    "Suresh", "Lakshmi", "Ramesh", "Priya", "Kavitha",     # names
+    "plumber", "electrician", "carpenter", "maid",          # services
+    "Gachibowli", "Koramangala", "Madhapur", "Hyderabad",   # places
+)
+
+
+@pytest.mark.parametrize("prompt_text", [
+    GREETING_STT_PROMPT, *[stt_prompt(lang) for lang in Language],
+])
+def test_stt_prompts_contain_no_capturable_vocabulary(prompt_text: str) -> None:
+    """Regression: a vocabulary list here was read aloud by the model on silence.
+
+    Callers saw phantom turns containing "Suresh" and "Lakshmi" — both straight
+    out of the list this prompt used to carry — and the workflow captured them
+    as the caller's name.
+    """
+    for word in _FORBIDDEN_IN_STT_PROMPTS:
+        assert word.lower() not in prompt_text.lower(), (
+            f"{word!r} in an STT prompt: the model will eventually speak it "
+            f"on silence and the workflow will capture it as a real answer"
+        )
 
 
 def test_build_stt_passes_openai_arguments(monkeypatch, configure) -> None:

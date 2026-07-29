@@ -75,21 +75,21 @@ rather than formal literary Kannada. Keep everyday English loanwords in Indian \
 pronunciation rather than switching accent for them.""",
 }
 
-#: Vocabulary the transcription model is most likely to get wrong on this call:
-#: Indian names, Indian cities and neighbourhoods, and the service words that
-#: the workflow has to extract correctly or the lead is useless.
-_STT_VOCABULARY = (
-    "Local Mama, Mami. "
-    "Names: Lakshmi, Ramesh, Priya, Venkatesh, Anjali, Suresh, Kavitha, Arjun, "
-    "Meena, Rajesh, Fatima, Gurpreet. "
-    "Places: Hyderabad, Bengaluru, Chennai, Mumbai, Delhi, Kolkata, Pune, "
-    "Gachibowli, Kukatpally, Madhapur, Koramangala, Indiranagar, Andheri, "
-    "Salt Lake, T Nagar, Banjara Hills, Jubilee Hills. "
-    "Services: plumber, electrician, carpenter, AC service, RO service, "
-    "geyser repair, pest control, house cleaning, maid, cook, painter, "
-    "car wash, packers and movers, tuition teacher, mechanic. "
-    "Money is in rupees, lakhs and crores."
-)
+#: Context for the transcription model — and deliberately NOT a word list.
+#:
+#: This used to enumerate Indian names, neighbourhoods and services to bias
+#: decoding toward them. That is a documented way to break Whisper-family
+#: models, `gpt-4o-transcribe` included: on silence or line noise they emit the
+#: prompt's own content as if it had been spoken. Callers saw phantom turns
+#: reading "Suresh" and "Lakshmi" — names straight out of the list — and a
+#: phantom name is not a cosmetic glitch, because the workflow captures it as
+#: the caller's name and a hallucinated "plumber" as their service.
+#:
+#: So the prompt now describes the *situation* only. Every word here is one the
+#: model might hallucinate, so it stays short, and nothing in it is shaped like
+#: a value the state machine collects. Indian names and places are recovered by
+#: the rules and the LLM extractor instead, which run on real transcripts.
+_STT_VOCABULARY = "They are asking for help with a household service."
 
 
 def tts_instructions(language: Language) -> str:
