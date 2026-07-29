@@ -164,7 +164,7 @@ class LeadRecorder:
             # scored 0.63 against the same rows. set_service has already done
             # that normalisation, so use it when we have it.
             query = rec.session.requested_service or request
-            hits = brain.retrieve(query, city=rec.session.city_or_area, top_k=3)
+            hits = await brain.retrieve_async(query, city=rec.session.city_or_area, top_k=3)
             if not hits:
                 return (
                     "No listed business matches that. Tell the caller the team "

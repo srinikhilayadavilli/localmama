@@ -293,6 +293,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
 def main() -> None:
     setup_logging()
+
+    # See agent_realtime.main: load the embedding model before taking calls.
+    from .services import brain
+
+    brain.warm()
     if not settings.livekit_configured:
         logger.warning(
             "LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are not all set — "

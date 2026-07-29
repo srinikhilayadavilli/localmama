@@ -35,6 +35,8 @@ Run:  python -m backend.app.agent_realtime dev
 
 from __future__ import annotations
 
+import asyncio
+
 from livekit import agents
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext
 
@@ -300,9 +302,44 @@ async def entrypoint(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(on_shutdown)
 
+    # Hang up once the lead is saved.
+    #
+    # Nothing here used to end the call: after the closing line the agent simply
+    # sat there, and on a real call the caller waited, said "Thank you", got an
+    # unprompted extra reply, and hung up themselves. On a phone line that is
+    # both rude and billable — the SIP leg stays up and metered until someone
+    # acts.
+    #
+    # `save_lead` is the only signal that the workflow is genuinely finished,
+    # and the grace period lets the model speak its closing before the room
+    # disappears mid-sentence.
+    async def hang_up_when_finished() -> None:
+        while not recorder.saved:
+            await asyncio.sleep(0.5)
+        logger.info(
+            "session=%s  lead saved; hanging up in %.1fs",
+            recorder.session.session_id[:8], settings.hangup_grace_seconds,
+        )
+        await asyncio.sleep(settings.hangup_grace_seconds)
+        try:
+            await ctx.delete_room()
+            logger.info("session=%s  call ended by the agent", recorder.session.session_id[:8])
+        except Exception as exc:  # noqa: BLE001 - the caller can always hang up
+            logger.warning("could not end the call: %s", exc)
+
+    # Held in a local so the task is not garbage-collected mid-await.
+    hangup_task = asyncio.create_task(hang_up_when_finished())
+    ctx.add_shutdown_callback(lambda: hangup_task.cancel())
+
 
 def main() -> None:
     setup_logging()
+
+    # Before any caller is on the line. The first lookup used to construct the
+    # embedding model mid-conversation, costing ten seconds of dead air.
+    from .services import brain
+
+    brain.warm()
     if not settings.livekit_configured:
         logger.warning("LiveKit credentials are not all set; the worker cannot connect.")
     if settings.realtime_provider == "gemini":

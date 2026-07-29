@@ -81,6 +81,14 @@ class Settings:
     #: Fixed STT language for providers that cannot switch at runtime (Sarvam).
     stt_language: str = field(default_factory=lambda: _env("STT_LANGUAGE", "en-IN"))
 
+    #: Seconds between the lead being saved and the agent ending the call.
+    #: Long enough for the closing line to finish playing — cutting the room
+    #: mid-sentence is worse than a moment of silence — short enough that the
+    #: caller is not left holding a live, metered line.
+    hangup_grace_seconds: float = field(
+        default_factory=lambda: float(_env("HANGUP_GRACE_SECONDS", "6"))
+    )
+
     # --- Knowledge base / "brain" (services/brain.py) ---
     #: NeonDB DSN, shared with the Vaani bridge. Blank disables every lookup
     #: cleanly rather than erroring per call.

@@ -72,6 +72,37 @@ def available() -> bool:
     return bool(settings.database_url)
 
 
+def warm() -> None:
+    """Load the embedding model before any caller is on the line.
+
+    Called at worker startup. Without it the model was constructed on the first
+    `lookup_services` of the first call — which meant a HuggingFace download and
+    ten seconds of dead air mid-conversation, long enough for the caller to ask
+    whether anyone was still there. The Dockerfile bakes the files into the
+    image; this pays the load cost too.
+    """
+    if not available():
+        return
+    try:
+        _embed("warm")
+        logger.info("embedding model ready")
+    except Exception as exc:  # noqa: BLE001 - a cold lookup is better than no worker
+        logger.warning("could not warm the embedding model: %s", exc)
+
+
+async def retrieve_async(text: str, *, city: str | None = None, top_k: int = 3):
+    """`retrieve` off the event loop.
+
+    Both halves of a lookup are blocking C/socket work — the embedding pass and
+    the psycopg round trip — so calling it directly from an async tool freezes
+    the whole agent: audio stops flowing and the Realtime API starts rejecting
+    overlapping responses with `conversation_already_has_active_response`.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(retrieve, text, city=city, top_k=top_k)
+
+
 def _connect():
     import psycopg
     from pgvector.psycopg import register_vector
