@@ -19,6 +19,7 @@ import uuid
 
 from .. import caller_profiles
 from ..config import settings
+from ..languages import match_language
 from ..logger import get_logger, log_transition
 from ..models import (
     ConversationState,
@@ -333,6 +334,48 @@ class ConversationManager:
         except RuntimeError:
             pass   # no running loop (sync context); skip prefetching
 
+    #: An utterance this short that names a language is a correction, not a
+    #: passing mention. "Telugu", "Telugu please", "speak in Telugu" all fit;
+    #: "my son studies in English medium school" does not.
+    _LANGUAGE_SWITCH_MAX_TOKENS = 4
+
+    def _maybe_switch_language(self, text: str) -> TurnResult | None:
+        """Let a caller correct a wrong language mid-call.
+
+        Language was captured once and never revisited, so a caller who landed
+        in the wrong one — easily done, since a recogniser writing Telugu in
+        Devanagari used to select Hindi — was stuck there for the whole call
+        with no way to say so.
+
+        Deliberately narrow. It keys on an explicit language *name*
+        (`match_language`), never on script detection: the caller speaks the
+        chosen language every turn, so script would re-trigger constantly. And
+        it requires a short utterance, so mentioning a language in passing does
+        not derail a call.
+        """
+        session = self.session
+        if session.selected_language is None:
+            return None            # first selection is the normal path
+        if len(text.split()) > self._LANGUAGE_SWITCH_MAX_TOKENS:
+            return None
+
+        named = match_language(text)
+        if named is None or named is session.selected_language:
+            return None
+
+        logger.info(
+            "session=%s  caller switched language %s -> %s",
+            session.session_id[:8], session.selected_language.value, named.value,
+        )
+        session.selected_language = named
+        # Re-ask whatever we were already on, now in the new language. The
+        # captured fields stand: they were about the service, not the wording.
+        key = _PROMPT_FOR_STATE.get(session.state)
+        reply = self._render(key) if key else get_message(
+            MessageKey.DIDNT_CATCH, session.language
+        )
+        return self._result(reply)
+
     async def _decide(self, text: str) -> TurnResult:
         """Deterministic turn logic. Owns all state and field changes."""
         session = self.session
@@ -365,6 +408,10 @@ class ConversationManager:
 
         if not text:
             return self._reprompt("empty utterance")
+
+        switched = self._maybe_switch_language(text)
+        if switched is not None:
+            return switched
 
         if session.state is ConversationState.REVIEW:
             return self._handle_review(text)

@@ -158,7 +158,10 @@ SERVICE_CATALOG: dict[str, tuple[str, ...]] = {
 _SERVICE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE | re.UNICODE)
     for p in (
-        r"\b(?:i\s+)?(?:need|want|looking\s+for|require|searching\s+for)\s+(?:a|an|the|some)?\s*(?P<v>.+)",
+        # The article group needs its own trailing space. Without it, "some" was
+        # matched inside "someone" and "I need someone for my bathroom" captured
+        # "one for my bathroom" as the requested service.
+        r"\b(?:i\s+)?(?:need|want|looking\s+for|require|searching\s+for)\s+(?:(?:a|an|the|some)\s+)?(?P<v>.+)",
         r"\b(?:mujhe|muje)\s+(?P<v>.+?)\s+chahiye",
         r"\b(?:naaku|naku)\s+(?P<v>.+?)\s+kavali",
         r"\b(?:enakku)\s+(?P<v>.+?)\s+vendum",
@@ -238,12 +241,21 @@ def _strip_fillers(text: str) -> str:
     return " ".join(tokens)
 
 
+#: Possessives and determiners that survive the request patterns and end up
+#: glued to the front of a captured service. "I need my car serviced" stored
+#: "my car serviced" as the trade, which is what reaches the lead and the
+#: knowledge-base lookup.
+_LEADING_DETERMINERS = {"my", "our", "mera", "meri", "naa", "na", "en", "nanna", "amar"}
+
+
 def _clean_value(value: str) -> str:
-    """Trim trailing politeness/punctuation from a captured span."""
+    """Trim politeness, punctuation and leading determiners from a span."""
     value = value.strip(" .,!?;:।")
     tokens = value.split()
     while tokens and _is_filler(tokens[-1]):
         tokens.pop()
+    while tokens and tokens[0].casefold() in _LEADING_DETERMINERS:
+        tokens.pop(0)
     return " ".join(tokens).strip()
 
 

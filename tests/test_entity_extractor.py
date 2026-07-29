@@ -304,3 +304,25 @@ def test_exact_synonyms_are_unaffected() -> None:
     assert match_service("ac service") == "ac repair"
     assert match_service("geyser") == "appliance repair"
     assert match_service("ప్లంబర్ కావాలి") == "plumber"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # The article group used to match inside "someone", so this captured
+        # "one for my bathroom" as the requested service.
+        ("i need someone for my bathroom", "someone for my bathroom"),
+        # A leading possessive rode along into the lead and into the
+        # knowledge-base query: "my car serviced".
+        ("I need my car serviced", "car serviced"),
+        # This one the catalogue resolves outright, which is the better
+        # outcome — asserted so the determiner strip cannot silently break it.
+        ("I want our house cleaned", "cleaning"),
+    ],
+)
+def test_request_capture_is_not_mangled(text: str, expected: str) -> None:
+    """These stay below MIN_CONFIDENCE and re-prompt, but whatever we do keep
+    must be the caller's actual words — it is what reaches the lead on a second
+    attempt, and what the brain lookup is run against."""
+    result = extract(text, expecting=ConversationState.ASK_SERVICE)
+    assert result.requested_service == expected

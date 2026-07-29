@@ -185,6 +185,15 @@ class LeadRecorder:
             ),
         )
         async def save_lead_tool() -> str:
+            # Idempotent. The lead file is keyed by session id so a second call
+            # merely rewrites it, but the side effects are not idempotent: the
+            # caller would get a second WhatsApp message and their profile's
+            # call_count would double. A model that re-confirms at the end of a
+            # call — or retries after a slow response — does exactly this.
+            if rec.saved:
+                logger.info("session=%s  save_lead called again; ignoring", rec._short())
+                return "Already saved. Just close the call warmly; do not save again."
+
             outstanding = missing_fields(rec.session)
             if outstanding:
                 logger.warning(

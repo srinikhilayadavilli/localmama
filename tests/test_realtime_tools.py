@@ -161,3 +161,34 @@ async def test_a_partial_call_still_writes_what_it_had(isolated):
     assert len(files) == 1
     import json
     assert json.loads(files[0].read_text())["user_name"] == "Ravi"
+
+
+@pytest.mark.asyncio
+async def test_save_lead_is_idempotent(isolated):
+    """A second save must not re-fire the side effects.
+
+    The lead file is keyed by session id so it merely rewrites, but the
+    WhatsApp handoff and caller-profile update are not idempotent: the caller
+    would receive a second message and their call_count would double.
+    """
+    rec = LeadRecorder()
+    t = tools(rec)
+    await t["set_language"](language="telugu")
+    await t["set_name"](name="Ravi")
+    await t["set_service"](service="plumber")
+    await t["set_city"](city="Hyderabad")
+
+    first = await t["save_lead"]()
+    assert "saved" in first.lower()
+
+    sent: list = []
+    from backend.app.services import whatsapp
+    original, whatsapp.fire = whatsapp.fire, lambda *a, **k: sent.append(a)
+    try:
+        second = await t["save_lead"]()
+    finally:
+        whatsapp.fire = original
+
+    assert "already saved" in second.lower()
+    assert sent == [], "a repeat save must not send another WhatsApp message"
+    assert len(list((isolated / "leads").glob("*.json"))) == 1
