@@ -221,6 +221,29 @@ class Settings:
     interrupt_min_duration: float = field(
         default_factory=lambda: float(_env("INTERRUPT_MIN_DURATION", "0.4"))
     )
+    #: How many recognised WORDS are needed to interrupt her. LiveKit defaults
+    #: this to 0, which means duration alone decides — so a cough, a breath,
+    #: traffic, or her own voice coming back through the caller's speakers all
+    #: cut her off mid-sentence. 1 is the useful floor: noise produces no words
+    #: and is ignored, while a caller cutting in with a single "Telugu" still
+    #: gets through. Raising it to 2+ would block those one-word answers, which
+    #: on this agent are most of what a caller actually says.
+    interrupt_min_words: int = field(
+        default_factory=lambda: int(_env("INTERRUPT_MIN_WORDS", "1"))
+    )
+    #: Seconds at the start and end of Mami's turn where a short "haan", "sari"
+    #: or "ok" is treated as listening-along rather than an interruption. Indian
+    #: callers backchannel constantly; without this they interrupt themselves.
+    #: Widen it if she still stops when someone is only agreeing with her.
+    backchannel_boundary: float = field(
+        default_factory=lambda: float(_env("BACKCHANNEL_BOUNDARY", "1.0"))
+    )
+    #: "fixed" waits the same time every turn; "dynamic" lets the semantic
+    #: detector shorten the wait when it is confident the caller has finished,
+    #: within the min/max bounds above.
+    endpointing_mode: str = field(
+        default_factory=lambda: _env("ENDPOINTING_MODE", "dynamic").lower()
+    )
 
     # --- Gemini Live turn taking (its OWN detector; the settings above do not
     # apply to it, which is why tuning them changed nothing on that path) ---

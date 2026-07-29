@@ -172,20 +172,38 @@ async def entrypoint(ctx: JobContext) -> None:
         session_kwargs["turn_handling"] = TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             endpointing=EndpointingOptions(
+                mode=settings.endpointing_mode,
                 min_delay=settings.endpoint_min_delay,
                 max_delay=settings.endpoint_max_delay,
             ),
             interruption=InterruptionOptions(
                 enabled=True,     # the caller can talk over Mami
                 min_duration=settings.interrupt_min_duration,
+                # Without this the count is 0 and duration alone decides, so
+                # any 0.4s of sound stops her — including her own audio echoing
+                # back off the caller's speakers.
+                min_words=settings.interrupt_min_words,
+                # A "haan" while she is still talking is agreement, not a
+                # request to stop.
+                backchannel_boundary=(
+                    settings.backchannel_boundary,
+                    settings.backchannel_boundary,
+                ),
+                # If the interruption produced no speech after all, pick the
+                # sentence back up instead of leaving the caller in silence
+                # wondering whether she is still there.
+                resume_false_interruption=True,
             ),
         )
         logger.info(
-            "semantic turn detection enabled (endpointing %.2f-%.2fs, "
-            "interrupt after %.2fs)",
+            "semantic turn detection enabled (endpointing %s %.2f-%.2fs, "
+            "interrupt after %.2fs and %d word(s), backchannel window %.1fs)",
+            settings.endpointing_mode,
             settings.endpoint_min_delay,
             settings.endpoint_max_delay,
             settings.interrupt_min_duration,
+            settings.interrupt_min_words,
+            settings.backchannel_boundary,
         )
     except Exception as exc:  # noqa: BLE001 - degrade to VAD endpointing
         logger.warning("semantic turn detection unavailable (%s); using VAD", exc)

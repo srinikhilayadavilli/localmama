@@ -195,7 +195,11 @@ def build_vad():
     try:
         from livekit.plugins import silero
 
-        return silero.VAD.load()
+        vad = silero.VAD.load()
+        # Logged on success too: this used to be silent, so "is VAD even
+        # running?" could only be answered by reading the source.
+        logger.info("Silero VAD loaded")
+        return vad
     except ImportError:
         logger.warning(
             "livekit-plugins-silero not installed; turn detection will rely on "
