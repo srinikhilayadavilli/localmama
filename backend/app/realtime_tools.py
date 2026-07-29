@@ -256,10 +256,19 @@ class LeadRecorder:
             # Same handoff as the deterministic pipeline, after the lead is
             # already durable. Skips with a log line when unconfigured or when
             # the transport gave us no phone number.
-            from .services import lead_store, whatsapp
+            from .services import brain, lead_store, whatsapp
 
             lead_store.save(lead, caller_phone=rec.caller_id or "")
-            whatsapp.fire(lead, phone=rec.caller_id or "")
+
+            # Name the businesses we actually matched in template param {{4}}
+            # instead of the generic "our team is shortlisting" line. The
+            # lookup already ran during the call, so this is warm; it is also
+            # after the lead is durable, and an empty result just falls back.
+            options = ""
+            if s.requested_service:
+                hits = await brain.retrieve_async(s.requested_service, city=s.city_or_area)
+                options = brain.options_line(hits)
+            whatsapp.fire(lead, phone=rec.caller_id or "", options=options)
 
             from . import caller_profiles
 
