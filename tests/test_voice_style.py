@@ -282,8 +282,13 @@ def test_the_prompt_treats_reply_length_as_latency() -> None:
     assert "dead air" in text, "the reason must be stated, not just the rule"
 
 
-def test_eagerness_defaults_to_the_low_latency_setting() -> None:
-    """`high` makes semantic VAD commit sooner to "the caller has finished"."""
+def test_eagerness_defaults_to_the_low_latency_setting(monkeypatch) -> None:
+    """`high` makes semantic VAD commit sooner to "the caller has finished".
+
+    The env var is cleared first: a developer's own .env must not decide whether
+    the shipped default is the low-latency one.
+    """
+    monkeypatch.delenv("OPENAI_REALTIME_EAGERNESS", raising=False)
     from backend.app.config import Settings
 
     assert Settings().openai_realtime_eagerness == "high"
