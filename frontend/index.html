@@ -60,10 +60,14 @@
         </div>
         <div class="controls">
           <button id="btn-lk-call" class="primary">📞 Call Mami</button>
+          <button id="btn-lk-call-realtime">📞 Call free-form Mami</button>
           <button id="btn-lk-hangup" disabled>Hang up</button>
         </div>
         <p class="hint" id="lk-hint">
-          Calls the LiveKit worker, so you hear Mami's real OpenAI voice.
+          Left: the deterministic pipeline — a state machine decides every turn,
+          so no question is skipped. Right: the speech-to-speech experiment —
+          the model runs the conversation itself and records details through
+          tools. Same workflow underneath, very different feel.
         </p>
         <div id="lk-audio" class="lk-audio"></div>
       </div>

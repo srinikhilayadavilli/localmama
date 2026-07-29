@@ -27,6 +27,7 @@
 
   const ui = {
     call: byId("btn-lk-call"),
+    callRealtime: byId("btn-lk-call-realtime"),
     hangup: byId("btn-lk-hangup"),
     status: byId("lk-status"),
     hint: byId("lk-hint"),
@@ -36,6 +37,11 @@
   // The page is also opened without these controls in some layouts; bail
   // quietly rather than throwing on every load.
   if (!ui.call) return;
+
+  //: Dispatch name of the speech-to-speech worker. The server validates this
+  //: against its own allowlist, so a wrong value here fails loudly rather than
+  //: dispatching something unexpected.
+  const REALTIME_AGENT = "local-mama-realtime";
 
   /** How long to wait for the agent to join before saying something is wrong. */
   const AGENT_JOIN_TIMEOUT_MS = 8000;
@@ -85,11 +91,13 @@
     }
   }
 
-  async function mintToken(roomName) {
+  async function mintToken(roomName, agent) {
     const res = await fetch("/api/livekit/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ room: roomName, identity: "web-caller" }),
+      // `agent` picks which worker is dispatched. Omitted means the default
+      // deterministic one, so the plain call path is unchanged.
+      body: JSON.stringify({ room: roomName, identity: "web-caller", agent }),
     });
     if (!res.ok) {
       // 503 here means the server has no LiveKit credentials, which is a
@@ -124,7 +132,7 @@
     }, AGENT_JOIN_TIMEOUT_MS);
   }
 
-  async function startCall() {
+  async function startCall(agent) {
     if (typeof LivekitClient === "undefined") {
       setStatus("off", "unavailable");
       setHint("The LiveKit client library did not load; check your connection.");
@@ -134,12 +142,13 @@
     const { Room, RoomEvent, Track } = LivekitClient;
 
     ui.call.disabled = true;
+    ui.callRealtime.disabled = true;
     setStatus("wait", "connecting…");
     setHint("Requesting a token and joining the room…");
     stopBrowserSpeech();
 
     try {
-      const { token, url, agent_name: agentName, dispatched } = await mintToken(newRoomName());
+      const { token, url, agent_name: agentName, dispatched } = await mintToken(newRoomName(), agent);
 
       // A named worker joins only when dispatched. If that failed, nothing will
       // be in the room — say so now rather than after eight seconds of silence.
@@ -151,6 +160,7 @@
         );
         show("system", `Dispatch to "${agentName}" failed — no such worker registered.`);
         ui.call.disabled = false;
+        ui.callRealtime.disabled = false;
         return;
       }
 
@@ -198,7 +208,6 @@
       );
       show("system", `Voice call failed: ${message}`);
       await endCall({ silent: true });
-      ui.call.disabled = false;
     }
   }
 
@@ -214,6 +223,7 @@
     }
     ui.audio.replaceChildren();
     ui.call.disabled = false;
+    ui.callRealtime.disabled = false;
     ui.hangup.disabled = true;
     if (!silent) {
       show("system", "Voice call ended.");
@@ -222,7 +232,8 @@
     setHint("Calls the LiveKit worker, so you hear Mami's real OpenAI voice.");
   }
 
-  ui.call.addEventListener("click", startCall);
+  ui.call.addEventListener("click", () => startCall());
+  ui.callRealtime.addEventListener("click", () => startCall(REALTIME_AGENT));
   ui.hangup.addEventListener("click", () => endCall());
 
   // A page unload mid-call otherwise leaves the room occupied until LiveKit

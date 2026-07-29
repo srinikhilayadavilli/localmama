@@ -255,7 +255,20 @@ async def livekit_token(body: dict) -> JSONResponse:
     # token alone is not enough: without this dispatch the caller joins an empty
     # room and hears silence. An unnamed worker auto-joins and needs none of it.
     dispatched = False
-    agent_name = settings.livekit_agent_name.strip()
+    # The caller may ask for a specific worker, which is how the console offers
+    # both pipelines side by side. Restricted to an allowlist: this endpoint is
+    # public, and an arbitrary name would let anyone dispatch any agent in the
+    # project into a room of their choosing.
+    requested = str((body or {}).get("agent") or "").strip()
+    allowed = {
+        n for n in (settings.livekit_agent_name.strip(), settings.livekit_realtime_agent_name.strip())
+        if n
+    }
+    if requested and requested not in allowed:
+        raise HTTPException(
+            status_code=400, detail=f"unknown agent {requested!r}; allowed: {sorted(allowed)}"
+        )
+    agent_name = requested or settings.livekit_agent_name.strip()
     if agent_name:
         try:
             lk = api.LiveKitAPI(

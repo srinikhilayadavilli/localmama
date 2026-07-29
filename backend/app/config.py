@@ -148,6 +148,12 @@ class Settings:
     livekit_agent_name: str = field(
         default_factory=lambda: _env("LIVEKIT_AGENT_NAME", "local-mama")
     )
+    #: The speech-to-speech worker, deployed alongside the deterministic one so
+    #: both can be called and compared. Only used by the console to offer it as
+    #: a second dispatch target; the worker itself reads LIVEKIT_AGENT_NAME.
+    livekit_realtime_agent_name: str = field(
+        default_factory=lambda: _env("LIVEKIT_REALTIME_AGENT_NAME", "local-mama-realtime")
+    )
     #: LiveKit Cloud Inference model ids, used when STT/TTS_PROVIDER=livekit.
     #: These are brokered and billed through LiveKit, so no vendor keys needed.
     livekit_stt_model: str = field(

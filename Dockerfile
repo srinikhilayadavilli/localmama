@@ -52,6 +52,11 @@ EXPOSE 8000
 # failed. Both hosts supply their own: Render via healthCheckPath, LiveKit Cloud
 # by watching the worker register.
 
+# Shell form on purpose: it expands AGENT_MODULE, which is how one image runs
+# either worker. `agent` is the deterministic state-machine pipeline; set
+# AGENT_MODULE=agent_realtime for the speech-to-speech experiment. Two LiveKit
+# Cloud agents can then share this image and differ only by their secrets.
+#
 # `start` is LiveKit's production mode; `dev` adds file-watching and reload,
 # which is wrong in a container.
-CMD ["python", "-m", "backend.app.agent", "start"]
+CMD python -m backend.app.${AGENT_MODULE:-agent} start
