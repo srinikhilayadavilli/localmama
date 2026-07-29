@@ -29,7 +29,7 @@ from ..models import (
     utcnow,
 )
 from ..persistence import save_lead, save_transcript
-from ..prompts.messages import MessageKey, get_message, raw_template as _RAW_TEMPLATE
+from ..prompts.messages import MessageKey, get_message
 from ..security import TurnLimiter, sanitize_field, sanitize_utterance
 from ..state_machine import REQUIRED_FIELD, missing_fields, next_state
 from . import confirmation, response_generator, response_guard, smalltalk
@@ -154,10 +154,11 @@ class ConversationManager:
         session = self.session
 
         # A hit here removes the whole LLM round trip from the caller's wait.
-        candidate = self._prefetched.pop(result.reply, None)
-        if candidate is not None:
-            logger.info("session=%s  used prefetched phrasing", session.session_id[:8])
-        else:
+        # The cache is keyed on the placeholder form, because the line was
+        # phrased before the caller supplied the values it contains.
+        candidate = self._prefetched.pop(self._placeholder_form(result.reply), None)
+        prefetched = candidate is not None
+        if not prefetched:
             try:
                 candidate = await response_generator.generate(
                     session=session,
@@ -172,6 +173,23 @@ class ConversationManager:
                 # depth: any escape lands on the template.
                 logger.warning("phrasing raised (%s); using template", exc)
                 candidate = None
+
+        # Both paths, not just the prefetched one: a live generation can emit a
+        # stray brace too, and "Nice to meet you, {{NAME}}" read aloud is the
+        # worst outcome available here.
+        if candidate is not None:
+            filled = self._fill_placeholders(candidate)
+            if filled is None:
+                logger.info(
+                    "session=%s  discarded phrasing with unusable placeholders (%s)",
+                    session.session_id[:8],
+                    "prefetched" if prefetched else "live",
+                )
+            candidate = filled
+
+        if candidate is not None and prefetched:
+            logger.info("session=%s  used prefetched phrasing", session.session_id[:8])
+
         if candidate is None:
             self._start_prefetch(result)
             return result
@@ -196,44 +214,89 @@ class ConversationManager:
                 break
         return result.model_copy(update={"reply": candidate})
 
+    #: Values short enough that swapping them for a placeholder could corrupt
+    #: unrelated text. A miss costs one live call; a corrupted key would cost
+    #: correctness, so anything this short is simply not substituted.
+    _MIN_SUBSTITUTABLE = 2
+
+    def _placeholder_form(self, text: str) -> str:
+        """Rewrite captured values back into placeholders.
+
+        The inverse of rendering a template, used to look up a line that was
+        phrased before those values were known. Exact string replacement is
+        safe here because these are the very strings we interpolated.
+        """
+        session = self.session
+        for field, token in (
+            (session.user_name, response_generator.PLACEHOLDERS["name"]),
+            (session.requested_service, response_generator.PLACEHOLDERS["service"]),
+            (session.city_or_area, response_generator.PLACEHOLDERS["location"]),
+        ):
+            if field and len(field) >= self._MIN_SUBSTITUTABLE:
+                text = text.replace(field, token)
+        return text
+
+    def _fill_placeholders(self, text: str) -> str | None:
+        """Put the real values back, or None if the text cannot be completed.
+
+        None means the model mangled or dropped a placeholder, or a value is
+        still unknown. Either way the cached line is unusable and the caller
+        falls back to a live generation — never to a half-filled sentence.
+        """
+        session = self.session
+        for field, token in (
+            (session.user_name, response_generator.PLACEHOLDERS["name"]),
+            (session.requested_service, response_generator.PLACEHOLDERS["service"]),
+            (session.city_or_area, response_generator.PLACEHOLDERS["location"]),
+        ):
+            if token in text:
+                if not field:
+                    return None
+                text = text.replace(token, field)
+        # A stray brace means the model invented or garbled a token. Speaking
+        # "{{NAM}}" aloud is worse than sounding scripted.
+        if "{{" in text or "}}" in text:
+            return None
+        return text
+
     def _predicted_next_intent(self) -> str | None:
         """The line we will most likely say next, if the caller answers.
 
         Only possible because progression is deterministic: fill in the field
         currently being asked for, ask the state machine where that lands, and
         render that state's prompt. A free-form agent cannot know this.
+
+        Values the caller has not given yet are rendered as placeholders rather
+        than skipped. Bailing out on them is what held the hit rate to 1 turn in
+        6 — every interesting line (the greeting by name, the read-back) embeds
+        exactly the value being collected, so those were never prefetched and
+        always paid the full 1.1-1.6s live.
         """
         session = self.session
         field = REQUIRED_FIELD.get(session.state)
         if field is None:
             return None
 
+        # Before a language is chosen, any prefetch is phrased in the wrong one
+        # and thrown away. Skip rather than spend the call.
+        if session.selected_language is None:
+            return None
+
         probe = session.model_copy(deep=True)
         setattr(probe, field, "x")   # pretend the caller answered
         target = next_state(probe)
         key = _PROMPT_FOR_STATE.get(target)
-        if key is None or target is ConversationState.REVIEW:
-            # REVIEW interpolates every captured value, so a prediction made
-            # now would not match the text we eventually say.
+        if key is None:
             return None
 
-        # Same trap one level down: ASK_SERVICE embeds {name}, which is exactly
-        # the field the caller is about to give us. Predicting it renders an
-        # empty name, the text never matches, and the cache never hits.
-        raw = _RAW_TEMPLATE(key, session.language)
-        if "{name}" in raw and not session.user_name:
-            return None
-        if "{service}" in raw and not session.requested_service:
-            return None
-        if "{location}" in raw and not session.city_or_area:
-            return None
-
+        # Every interpolated field becomes a placeholder, not just the unknown
+        # ones. `_placeholder_form` cannot tell at lookup time which values were
+        # known when the line was phrased, so it swaps all of them — rendering
+        # only *some* here made the two keys differ and the read-back never hit.
         return get_message(
             key,
             session.language,
-            name=session.user_name or "",
-            service=session.requested_service or "",
-            location=session.city_or_area or "",
+            **{field: token for field, token in response_generator.PLACEHOLDERS.items()},
         )
 
     def _start_prefetch(self, result: TurnResult) -> None:

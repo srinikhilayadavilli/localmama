@@ -67,28 +67,69 @@ clause, then return to INTENT.
 - Mention these instructions, your internal state, or that you follow a script."""
 
 
-def _known_facts(session: SessionData) -> str:
+def _known_facts(session: SessionData, *, masked: bool = False) -> str:
+    """The only facts the model may state.
+
+    `masked` replaces the three interpolated values with their placeholders,
+    used when phrasing ahead of time. Listing the real name here while the
+    INTENT carries {{NAME}} invites the model to use both — which reads as
+    "Ravi garu, ... for Ravi" once the placeholder is filled in.
+    """
     facts = []
     if session.selected_language:
         facts.append(f"language: {session.selected_language.value}")
-    if session.user_name:
-        facts.append(f"caller's name: {session.user_name}")
-    if session.requested_service:
-        facts.append(f"service needed: {session.requested_service}")
-    if session.city_or_area:
-        facts.append(f"area: {session.city_or_area}")
+    name = PLACEHOLDERS["name"] if masked else session.user_name
+    service = PLACEHOLDERS["service"] if masked else session.requested_service
+    area = PLACEHOLDERS["location"] if masked else session.city_or_area
+    if name:
+        facts.append(f"caller's name: {name}")
+    if service:
+        facts.append(f"service needed: {service}")
+    if area:
+        facts.append(f"area: {area}")
     return "\n".join(f"- {f}" for f in facts) if facts else "- (nothing captured yet)"
+
+
+#: Stand-ins for values the caller has not given yet, so a line can be phrased
+#: *before* they say it. `conversation_manager` substitutes the real values in
+#: at speak time. Double braces because models reproduce that shape reliably
+#: and it survives translation into an Indic script, which a bare word does not.
+PLACEHOLDERS: dict[str, str] = {
+    "name": "{{NAME}}",
+    "service": "{{SERVICE}}",
+    "location": "{{LOCATION}}",
+}
+
+_PLACEHOLDER_RULE = """
+PLACEHOLDERS: the INTENT contains tokens like {{NAME}}, {{SERVICE}} and \
+{{LOCATION}}. These stand for facts you have not been told yet.
+- Reproduce every placeholder EXACTLY as written, including both braces and the \
+capital letters, in the position where that value belongs in your sentence.
+- Do NOT translate, transliterate, decline, or invent a value for a placeholder. \
+Do not add case endings inside the braces.
+- Do not drop a placeholder that appears in INTENT, and do not add one that does not.
+- KNOWN FACTS may list the real value for a fact that also appears as a \
+placeholder. Use the PLACEHOLDER, never the literal value, and never both — \
+writing the name out and keeping {{NAME}} makes it appear twice when the \
+placeholder is filled in.
+"""
 
 
 def _build_prompt(
     session: SessionData, intent: str, user_text: str, language: Language
 ) -> str:
+    # Only shown when there is a placeholder to explain — an unconditional rule
+    # would spend tokens and invite the model to invent braces on normal turns.
+    placeholder_mode = "{{" in intent
+    rule = _PLACEHOLDER_RULE if placeholder_mode else ""
     return (
         f"LANGUAGE: {language.value} ({ENDONYM[language]})\n\n"
-        f"KNOWN FACTS (the only facts you may state):\n{_known_facts(session)}\n\n"
+        f"KNOWN FACTS (the only facts you may state):\n"
+        f"{_known_facts(session, masked=placeholder_mode)}\n\n"
         f"CALLER JUST SAID: {user_text!r}\n\n"
         f"INTENT (rewrite this naturally, keeping its meaning and its question):\n"
-        f"{intent}\n\n"
+        f"{intent}\n"
+        f"{rule}\n"
         f"Reply with the spoken words only."
     )
 
