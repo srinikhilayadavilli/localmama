@@ -2,7 +2,7 @@ PY ?= python3.11
 VENV := .venv
 BIN := $(VENV)/bin
 
-.PHONY: help setup run cli demo voices agent agent-realtime agent-gemini call test test-ui clean
+.PHONY: help setup run cli demo voices agent agent-realtime agent-gemini call latency test test-ui clean
 
 help:
 	@echo "Local Mama — MVP"
@@ -18,6 +18,7 @@ help:
 	@echo "  make call    Mint a Playground token to talk to the agent in a browser"
 	@echo "  make agent-realtime  OpenAI Realtime speech-to-speech worker (EXPERIMENT, no state machine)"
 	@echo "  make agent-gemini    Same worker on Gemini Live, for comparison"
+	@echo "  make latency Where the caller's wait goes, from real call metrics"
 	@echo "  make clean   Remove venv, caches, and generated data"
 
 setup:
@@ -50,6 +51,9 @@ agent-gemini:
 
 call:
 	$(BIN)/python -m backend.app.devcall
+
+latency:
+	$(BIN)/python -m backend.app.latency
 
 test:
 	$(BIN)/python -m pytest -q

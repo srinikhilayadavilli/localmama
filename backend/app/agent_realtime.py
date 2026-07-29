@@ -46,6 +46,7 @@ from .config import settings
 from .logger import get_logger, setup_logging
 from .prompts.voice_style import GREETING_STT_PROMPT, realtime_accent_instructions
 from .realtime_tools import LeadRecorder, prefill_from_profile
+from .services import metrics_store
 from .services.conversation_manager import abandon
 
 logger = get_logger("localmama.realtime")
@@ -279,6 +280,17 @@ async def entrypoint(ctx: JobContext) -> None:
     session = AgentSession(llm=model)
     agent = Agent(instructions=instructions(), tools=recorder.build_tools())
 
+    # Buffered, not written per turn: a database round trip inside the audio
+    # path to measure the audio path would distort the thing being measured.
+    turn_metrics: list[dict] = []
+
+    @session.on("metrics_collected")
+    def on_metrics(event) -> None:  # noqa: ANN001 - LiveKit event object
+        try:
+            turn_metrics.append(metrics_store.to_row(getattr(event, "metrics", event)))
+        except Exception as exc:  # noqa: BLE001 - never let measurement break a call
+            logger.debug("could not record metrics: %s", exc)
+
     @session.on("user_input_transcribed")
     def on_user(event) -> None:  # noqa: ANN001
         if event.is_final and event.transcript.strip():
@@ -333,6 +345,13 @@ async def entrypoint(ctx: JobContext) -> None:
         )
 
     async def on_shutdown() -> None:
+        # Written off the event loop, at the end, in one batch.
+        if turn_metrics:
+            await asyncio.to_thread(
+                metrics_store.flush,
+                recorder.session.session_id, ctx.room.name, turn_metrics,
+            )
+
         # A call that ends before save_lead still leaves what we learned.
         if not recorder.saved:
             abandon(recorder.session)
