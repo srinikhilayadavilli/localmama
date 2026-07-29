@@ -54,13 +54,44 @@ ENDONYM: dict[Language, str] = {
 # Aliases the user may speak or type. Matching is done on a normalised
 # (casefolded, accent-stripped, punctuation-free) form of the utterance, so
 # entries here should also be written in that normalised form.
+# Each language's name is listed in Latin, its own script, AND the other Indian
+# scripts a recogniser is likely to write it in.
+#
+# That last group is not padding. Speech recognition running with language
+# auto-detection routinely writes Indic audio in the wrong script — Devanagari
+# most of all, because it is the best-represented Indian script in these models.
+# A caller who says "తెలుగు" and gets transcribed "तेलुगु" used to match no
+# alias at all, so `detect_script_language` saw Devanagari and asserted HINDI.
+# The call then continued in Hindi, STT was pinned to `hi`, every later Telugu
+# turn came back as Devanagari too, and the workflow stalled. One missing alias
+# produced both "it answers in Hindi" and "it will not move on".
 _ALIASES: dict[Language, tuple[str, ...]] = {
-    Language.ENGLISH: ("english", "englis", "inglish", "angrezi", "angreji", "ingles", "eng"),
-    Language.HINDI: ("hindi", "hindhi", "हिंदी", "हिन्दी", "हिंदि"),
-    Language.BENGALI: ("bengali", "bangla", "bengoli", "bangali", "বাংলা", "বাঙলা"),
-    Language.TELUGU: ("telugu", "telegu", "thelugu", "tel", "తెలుగు"),
-    Language.TAMIL: ("tamil", "thamil", "tamizh", "thamizh", "தமிழ்"),
-    Language.KANNADA: ("kannada", "kannad", "canada", "kanada", "kannadam", "ಕನ್ನಡ"),
+    Language.ENGLISH: (
+        "english", "englis", "inglish", "angrezi", "angreji", "ingles", "eng",
+        "अंग्रेजी", "अंग्रेज़ी", "इंग्लिश", "इंग्लिश",
+        "ఇంగ్లీష్", "ఆంగ్లం", "ইংরেজি", "ஆங்கிலம்", "ಇಂಗ್ಲಿಷ್",
+    ),
+    Language.HINDI: (
+        "hindi", "hindhi", "हिंदी", "हिन्दी", "हिंदि",
+        "హిందీ", "হিন্দি", "இந்தி", "ಹಿಂದಿ",
+    ),
+    Language.BENGALI: (
+        "bengali", "bangla", "bengoli", "bangali", "বাংলা", "বাঙলা",
+        "बंगाली", "बांग्ला", "बांगला", "బెంగాలీ", "ಬಂಗಾಳಿ",
+    ),
+    Language.TELUGU: (
+        "telugu", "telegu", "thelugu", "tel", "తెలుగు",
+        "तेलुगु", "तेलुगू", "तेलगु", "तेलेगु",
+        "তেলুগু", "தெலுங்கு", "ತೆಲುಗು",
+    ),
+    Language.TAMIL: (
+        "tamil", "thamil", "tamizh", "thamizh", "தமிழ்",
+        "तमिल", "तमिळ", "तामिल", "తమిళ్", "ತಮಿಳು", "তামিল",
+    ),
+    Language.KANNADA: (
+        "kannada", "kannad", "canada", "kanada", "kannadam", "ಕನ್ನಡ",
+        "कन्नड़", "कन्नड", "कन्नडा", "కన్నడ", "কন্নড়",
+    ),
 }
 
 # Unicode block ranges per script. Used for detection when the user simply

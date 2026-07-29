@@ -11,6 +11,7 @@ from backend.app.languages import (
     detect_script_language,
     match_language,
     normalize_text,
+    resolve_language,
 )
 from backend.app.prompts.messages import MessageKey, get_message, missing_translations
 
@@ -91,3 +92,47 @@ def test_confirmation_includes_captured_values():
         location="Madhapur",
     )
     assert "electrician" in rendered and "Madhapur" in rendered
+
+
+# --- cross-script language names --------------------------------------
+#
+# Speech recognition with language auto-detection routinely writes Indic audio
+# in the wrong script, Devanagari most often. A caller who said "తెలుగు" and was
+# transcribed "तेलुगु" matched no alias, so script detection asserted HINDI —
+# the call continued in Hindi, STT was pinned to `hi`, and every later Telugu
+# turn came back as Devanagari too, stalling the workflow. Both "it answers in
+# Hindi" and "it will not move on" came from this one gap.
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Telugu named in Devanagari, the observed failure.
+        ("तेलुगु", Language.TELUGU),
+        ("तेलुगू", Language.TELUGU),
+        ("तेलगु", Language.TELUGU),
+        # The rest of the six, same trap.
+        ("तमिल", Language.TAMIL),
+        ("कन्नड़", Language.KANNADA),
+        ("बंगाली", Language.BENGALI),
+        ("अंग्रेजी", Language.ENGLISH),
+        ("इंग्लिश", Language.ENGLISH),
+        # And named in Telugu script, for a recogniser biased the other way.
+        ("హిందీ", Language.HINDI),
+        ("ఇంగ్లీష్", Language.ENGLISH),
+    ],
+)
+def test_language_named_in_another_script(text: str, expected: Language) -> None:
+    assert resolve_language(text) is expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("मुझे प्लंबर चाहिए", Language.HINDI),
+        ("నాకు ప్లంబర్ కావాలి", Language.TELUGU),
+        ("আমার একজন প্লাম্বার দরকার", Language.BENGALI),
+    ],
+)
+def test_script_detection_still_works_for_plain_speech(text: str, expected: Language) -> None:
+    """The aliases must not break the caller who just starts talking."""
+    assert resolve_language(text) is expected
