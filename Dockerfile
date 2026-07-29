@@ -35,7 +35,7 @@ RUN python -m backend.app.agent download-files || \
     echo "download-files unavailable; models will be fetched at startup"
 
 # Same reasoning, learned the hard way. The knowledge-base embedding model was
-# fetched from HuggingFace on the first lookup_services call — which happened
+# fetched from HuggingFace on the first knowledge-base lookup — which happened
 # mid-conversation on a real call and cost ten seconds of dead air, long enough
 # that the caller asked "ఉన్నారా కాల్లో?" ("are you on the call?"). Baking it
 # into the image makes the first lookup as fast as the second.

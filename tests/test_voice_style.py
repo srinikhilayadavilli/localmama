@@ -226,3 +226,64 @@ def test_stt_switch_survives_a_plugin_without_that_option() -> None:
 
     agent_module._apply_language_to_stt(FixedSTT(), Language.HINDI)  # no raise
     agent_module._apply_language_to_stt(None, Language.HINDI)
+
+
+# --- Indian English, always ------------------------------------------
+#
+# The accent is the product for an Indian audience, and the reported failure
+# was drift: it slips after an interruption, a correction, or a language
+# switch. These pin the instruction rather than the audio, which is the only
+# part we control deterministically.
+
+
+def test_english_forbids_every_other_accent() -> None:
+    text = tts_instructions(Language.ENGLISH)
+    lowered = text.lower()
+    for accent in ("american", "british", "australian"):
+        assert accent in lowered, f"{accent} must be named so it can be excluded"
+    assert "no exceptions" in lowered
+    assert "do not mirror them" in lowered, "mirroring the caller is how it drifts"
+
+
+def test_english_re_anchors_at_the_moments_it_slips() -> None:
+    """Interruptions, corrections and language switches are the reported triggers."""
+    text = tts_instructions(Language.ENGLISH).lower()
+    for trigger in ("interruption", "correction", "language switch"):
+        assert trigger in text
+
+
+def test_the_realtime_prompt_carries_the_same_rule() -> None:
+    """The deployed worker is speech-to-speech: the system prompt is the only
+    place an accent can be specified, so the rule must survive into it."""
+    from backend.app import agent_realtime
+
+    text = agent_realtime.instructions().lower()
+    assert "indian english and never changes" in text
+    assert "re-anchor" in text
+
+
+@pytest.mark.parametrize("language", list(Language))
+def test_no_language_permits_an_american_accent(language: Language) -> None:
+    assert "native indian" in tts_instructions(language).lower()
+
+
+# --- latency: keep replies short -------------------------------------
+#
+# Measured on real calls: model ttft is 0.34s p50 / 0.60s p95, while the gap a
+# caller experiences is 4.03s p50 / 16.07s p95. The model is not the wait — the
+# reply being spoken is. So brevity is a latency setting, not a style note.
+
+
+def test_the_prompt_treats_reply_length_as_latency() -> None:
+    from backend.app import agent_realtime
+
+    text = agent_realtime.instructions().lower()
+    assert "one or two short sentences" in text
+    assert "dead air" in text, "the reason must be stated, not just the rule"
+
+
+def test_eagerness_defaults_to_the_low_latency_setting() -> None:
+    """`high` makes semantic VAD commit sooner to "the caller has finished"."""
+    from backend.app.config import Settings
+
+    assert Settings().openai_realtime_eagerness == "high"

@@ -49,7 +49,12 @@ _LANGUAGE_STYLE: dict[Language, str] = {
 Language: Indian English, as spoken in a metro like Hyderabad or Bangalore. \
 Educated and fluent, but unmistakably Indian — not an Indian speaker imitating \
 an American one. Sprinkle in the natural discourse habits of Indian English \
-where they fit ("only", "itself", "please tell me") without laying it on thick.""",
+where they fit ("only", "itself", "please tell me") without laying it on thick.
+This is absolute and has no exceptions. Do not drift into an American, British \
+or Australian accent at any point, however long the call runs. If the caller \
+speaks American-accented English, do NOT mirror them. Re-anchor to Indian \
+English after every interruption, every correction, and every language switch \
+— those are exactly the moments the accent slips.""",
     Language.HINDI: """\
 Language: Hindi, as a native speaker from north India. Everyday spoken \
 Hindustani, not literary Sanskritised Hindi. Pronounce the English words that \

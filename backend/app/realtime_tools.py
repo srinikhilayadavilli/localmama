@@ -203,6 +203,51 @@ class LeadRecorder:
             return f"Recorded city: {value}." + rec.state_line()
 
         @function_tool(
+            name="lookup_vendor_contact",
+            description=(
+                "Look up a business's phone number when the caller ASKS for it — "
+                "\"what is X's number\", \"how do I contact X\", \"can I call them\". "
+                "Only call this when they ask. Never volunteer businesses or "
+                "numbers they did not ask about."
+            ),
+        )
+        async def lookup_vendor_contact(
+            business: Annotated[str, "The business name the caller asked about."],
+        ) -> str:
+            from .services import directory
+
+            if not directory.available():
+                return "The directory is unavailable. Say you cannot look it up right now."
+
+            matches = await directory.find_async(business, limit=4)
+            if not matches:
+                return (
+                    f"No business called {business!r} is listed. Tell the caller you "
+                    f"do not have that one, and do NOT guess a number."
+                )
+
+            # An exact name is an answer; several partial ones are a question.
+            exact = [m for m in matches if m.name.lower() == business.strip().lower()]
+            if len(matches) > 1 and not exact:
+                names = ", ".join(m.name for m in matches)
+                return (
+                    f"Several businesses match: {names}. Ask the caller which one "
+                    f"they mean before giving any number."
+                )
+
+            hit = exact[0] if exact else matches[0]
+            if not hit.phone:
+                return (
+                    f"{hit.name} is listed but has no phone number on record. Tell "
+                    f"the caller it is not available and offer to have the team follow up."
+                )
+            # Grouped so it is read as a dictatable number rather than one long token.
+            return (
+                f"{hit.name} ({hit.category}): {hit.spoken_phone()}. "
+                f"Read the number out clearly, in digit groups, and offer to repeat it."
+            )
+
+        @function_tool(
             name="save_lead",
             description=(
                 "Save the lead. Call this ONLY after you have read all the details "
@@ -271,7 +316,8 @@ class LeadRecorder:
             )
             return "Lead saved. Thank the caller and close the call warmly."
 
-        return [set_language, set_name, set_service, set_city, save_lead_tool]
+        return [set_language, set_name, set_service, set_city,
+                lookup_vendor_contact, save_lead_tool]
 
 
 def prefill_from_profile(rec: LeadRecorder) -> list[str]:

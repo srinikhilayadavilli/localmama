@@ -30,7 +30,8 @@ def tools(rec: LeadRecorder) -> dict:
 
 def test_exactly_the_expected_tools_are_exposed():
     assert set(tools(LeadRecorder())) == {
-        "set_language", "set_name", "set_service", "set_city", "save_lead"
+        "set_language", "set_name", "set_service", "set_city",
+        "lookup_vendor_contact", "save_lead"
     }
 
 

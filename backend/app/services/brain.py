@@ -55,8 +55,16 @@ class Hit:
 
 @lru_cache(maxsize=1)
 def _embedder():
-    """Loaded once and cached: construction downloads and initialises the model,
-    which is far too slow to do inside a call."""
+    """Loaded once per process, lazily, and cached.
+
+    Lazily on purpose: loading it up front in every job process put the ~500MB
+    model into all eight of LiveKit's idle processes at once, taking memory
+    from 0.8GB to 2GB of 4GB and failing calls. `retrieve_async` runs this off
+    the event loop, so a cold first lookup costs a few seconds in a worker
+    thread while the agent keeps talking — and the Dockerfile bakes the model
+    files into the image, so even that cold load reads from disk rather than
+    fetching from HuggingFace mid-call.
+    """
     from fastembed import TextEmbedding
 
     logger.info("loading embedding model %s", EMBED_MODEL)
@@ -70,29 +78,6 @@ def _embed(text: str):
 def available() -> bool:
     """Whether the brain can be used at all. Everything degrades to None/[] if not."""
     return bool(settings.database_url)
-
-
-def warm() -> None:
-    """Load the embedding model up front.
-
-    NOT called per job process. Doing that put the ~500MB model into all eight
-    of LiveKit's idle processes at once: memory went from 0.8GB to 2GB of 4GB
-    with 58 warnings, and calls started failing. `retrieve_async` already runs
-    the load off the event loop, so a cold first lookup costs a few seconds in
-    a worker thread while the agent keeps talking — much cheaper than holding
-    the model resident eight times over.
-
-    Kept for a single-process deployment, where it is safe and useful. The
-    Dockerfile still bakes the model files into the image, so even a cold load
-    reads from disk rather than fetching from HuggingFace mid-call.
-    """
-    if not available():
-        return
-    try:
-        _embed("warm")
-        logger.info("embedding model ready")
-    except Exception as exc:  # noqa: BLE001 - a cold lookup is better than no worker
-        logger.warning("could not warm the embedding model: %s", exc)
 
 
 async def retrieve_async(text: str, *, city: str | None = None, top_k: int = 3):

@@ -254,8 +254,14 @@ class Settings:
     #: Semantic VAD eagerness: "low" waits longer before deciding the caller is
     #: done, "high" answers sooner. Semantic (rather than plain server VAD) is
     #: the point on Indian calls, where speakers pause between clauses.
+    #:
+    #: "high" is the setting for minimum dead air, and it is a real trade: the
+    #: detector commits to "they have finished" sooner, so a caller who pauses
+    #: mid-thought is more likely to be answered over. Drop back to "auto" if
+    #: people start getting cut off — the TurnGap figures in `make latency` show
+    #: which way the balance has landed.
     openai_realtime_eagerness: str = field(
-        default_factory=lambda: _env("OPENAI_REALTIME_EAGERNESS", "auto").lower()
+        default_factory=lambda: _env("OPENAI_REALTIME_EAGERNESS", "high").lower()
     )
     #: "near_field" for a phone handset, "far_field" for a laptop mic.
     openai_realtime_noise_reduction: str = field(

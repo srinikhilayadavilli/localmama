@@ -117,25 +117,3 @@ def save(lead: Lead, caller_phone: str = "") -> bool:
             lead.session_id[:8], exc,
         )
         return False
-
-
-def recent(limit: int = 50) -> list[dict]:
-    """Most recent leads for this agent, newest first. [] if unavailable."""
-    if not available():
-        return []
-    try:
-        with _connect() as conn:
-            _ensure_schema(conn)
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT session_id, caller_phone, language, name, service, city,"
-                    " status, created_at FROM localmama.leads"
-                    " WHERE agent_id = %s ORDER BY created_at DESC LIMIT %s",
-                    (settings.brain_agent_id, limit),
-                )
-                cols = ["session_id", "caller_phone", "language", "name", "service",
-                        "city", "status", "created_at"]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("could not read leads from postgres: %s", exc)
-        return []

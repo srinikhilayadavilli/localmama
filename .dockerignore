@@ -19,6 +19,4 @@ data/transcripts/
 tests/
 *.md
 Makefile
-gap.py
-lat_tmp.py
 .DS_Store
