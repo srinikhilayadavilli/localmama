@@ -1,10 +1,9 @@
 {
-  "//": "Accepts inbound calls on the Local Mama DID. Put YOUR number in E.164.",
-  "//auth": "auth_username/password are only for a bring-your-own SIP trunk",
-  "//auth2": "(Twilio/Telnyx/Plivo). Leave blank for a LiveKit Cloud number.",
   "trunk": {
-    "name": "local-mama inbound",
-    "numbers": ["+91XXXXXXXXXX"],
+    "name": "local-mama inbound (vobiz)",
+    "numbers": [
+      "+918071581496"
+    ],
     "auth_username": "",
     "auth_password": ""
   }

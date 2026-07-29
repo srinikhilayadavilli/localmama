@@ -1,12 +1,8 @@
 {
-  "//": "Each inbound call gets its OWN room, then dispatches the named agent.",
-  "//why": "dispatchRuleIndividual is what keeps two callers apart. A shared",
-  "//why2": "room would put strangers into one conversation with one agent.",
-  "//agent": "Must match LIVEKIT_AGENT_NAME on the deployed worker. The worker",
-  "//agent2": "is NAMED, so it only ever joins rooms dispatched to it by name.",
-  "//trunk": "Replace with the ST_xxxx id from `lk sip inbound list`.",
   "name": "local-mama-dispatch",
-  "trunk_ids": ["ST_REPLACE_ME"],
+  "trunk_ids": [
+    "ST_xZhVG8X6KYPR"
+  ],
   "rule": {
     "dispatchRuleIndividual": {
       "roomPrefix": "local-mama"
@@ -14,7 +10,9 @@
   },
   "room_config": {
     "agents": [
-      { "agent_name": "local-mama-cloud" }
+      {
+        "agent_name": "local-mama-cloud"
+      }
     ]
   }
 }

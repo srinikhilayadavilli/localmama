@@ -12,7 +12,42 @@ lk project list          # the * marks the active one
 lk sip inbound list --project localmama
 ```
 
-## 1. Buy the number (dashboard — needs a card)
+## Current state (Vobiz DID, live)
+
+| | |
+|---|---|
+| DID | `+918071581496` (Vobiz) |
+| Inbound trunk | `ST_xZhVG8X6KYPR` — "local-mama inbound (vobiz)" |
+| Dispatch rule | `SDR_cn5WSYVL2pTD` → agent `local-mama-cloud` |
+| Rooms | `local-mama_<caller>_<random>`, one per call |
+
+**What Vobiz must be told** — this is the remaining half, and it is on their
+side, not ours:
+
+```
+Send inbound calls for +918071581496 to:
+    sip:localmama-iuyu1598.sip.livekit.cloud
+Transport: UDP or TCP, port 5060
+```
+
+Until that origination/termination route exists at Vobiz, dialling the number
+reaches Vobiz and stops there — LiveKit never sees it, and the agent logs stay
+silent. Nothing here can detect that from our side.
+
+### Security: the trunk is currently open
+
+It accepts a call for that number from *any* source address, because we do not
+yet know how Vobiz authenticates. Anyone who learns the number and the SIP host
+could place calls into it, and every one of them costs OpenAI and Sarvam usage.
+
+Close it as soon as Vobiz tells you which they use:
+
+- **IP allowlist** — they send from fixed signalling IPs:
+  `lk sip inbound update ST_xZhVG8X6KYPR` with `allowed_addresses`
+- **Digest auth** — they authenticate: fill `auth_username` / `auth_password`
+  in `setup/inbound-trunk.json` and recreate
+
+## Buying another number (dashboard — needs a card)
 
 Not scriptable: `lk sip` manages trunks and rules, but numbers are bought in
 the dashboard.
