@@ -42,7 +42,12 @@ _EXTRACTION_SCHEMA = {
             ),
         },
         "language": {
-            "type": ["string", "null"],
+            # No sibling "type" here. Pairing `type: ["string","null"]` with an
+            # enum makes Anthropic's structured-output validator reject the whole
+            # request — "Enum value 'english' does not match declared type
+            # ['string','null']" — which failed every extraction call with a 400
+            # and silently disabled the LLM fallback. The enum alone constrains
+            # the value, null included.
             "enum": [*[lang.value for lang in Language], None],
             "description": "Which supported language the caller asked to use, if any.",
         },
