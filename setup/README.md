@@ -25,14 +25,23 @@ lk sip inbound list --project localmama
 side, not ours:
 
 ```
-Send inbound calls for +918071581496 to:
-    sip:localmama-iuyu1598.sip.livekit.cloud
-Transport: UDP or TCP, port 5060
+Origination URI:  4xe6vzxnl90.sip.livekit.cloud
+Transport:        UDP
 ```
 
-Until that origination/termination route exists at Vobiz, dialling the number
-reaches Vobiz and stops there — LiveKit never sees it, and the agent logs stay
-silent. Nothing here can detect that from our side.
+That host is the LiveKit **project id** minus its `p_` prefix
+(`p_4xe6vzxnl90`), NOT the project subdomain. The two are unrelated: this
+project's subdomain is `localmama-iuyu1598`, and the sibling Vaani project is
+`vaaniai-ulbv5i95` against a SIP host of `50bjr5kmu1p.sip.livekit.cloud`.
+
+Do not try to confirm the host with DNS. `*.sip.livekit.cloud` is a wildcard
+onto one shared SIP edge, so **every** name under it resolves — including a
+wrong one — and routing is decided by the SIP domain, not the address. A bad
+host looks perfectly healthy right up until calls silently fail to arrive.
+
+Until that route exists at Vobiz, dialling the number reaches Vobiz and stops
+there — LiveKit never sees it, and the agent logs stay silent. Nothing on our
+side can detect that.
 
 ### Security: the trunk is currently open
 
