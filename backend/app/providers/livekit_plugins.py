@@ -159,7 +159,18 @@ def build_tts(language: Language):
         if provider == "sarvam":
             from livekit.plugins import sarvam
 
-            return sarvam.TTS(target_language_code=locale)
+            # Natively recorded Indic voices, and streaming over a websocket —
+            # which is why a switch here fixes both the anglicised Telugu and a
+            # chunk of the gap between turns. `speaker` is optional; blank uses
+            # the model default rather than passing None through as a value.
+            kwargs = {
+                "target_language_code": locale,
+                "model": settings.sarvam_tts_model,
+                "pace": settings.sarvam_pace,
+            }
+            if settings.sarvam_speaker:
+                kwargs["speaker"] = settings.sarvam_speaker
+            return sarvam.TTS(**kwargs)
 
     except ImportError as exc:
         logger.error(

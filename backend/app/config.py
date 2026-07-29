@@ -81,6 +81,20 @@ class Settings:
     #: Fixed STT language for providers that cannot switch at runtime (Sarvam).
     stt_language: str = field(default_factory=lambda: _env("STT_LANGUAGE", "en-IN"))
 
+    # --- Sarvam (TTS_PROVIDER=sarvam) ---
+    #: The Indic-native alternative. OpenAI's TTS is English-phonetic: it will
+    #: read Telugu or Tamil in an English speaker's mouth no matter what the
+    #: instructions say, because the accent lever steers delivery, not
+    #: phonemes. Sarvam's bulbul voices are recorded natively per language, and
+    #: its TTS streams over a websocket instead of OpenAI's ~1.3s
+    #: time-to-first-audio. Blank speaker uses the model default.
+    sarvam_speaker: str = field(default_factory=lambda: _env("SARVAM_SPEAKER"))
+    sarvam_tts_model: str = field(
+        default_factory=lambda: _env("SARVAM_TTS_MODEL", "bulbul:v3")
+    )
+    #: Speaking rate. Slightly under 1.0 reads more clearly on a phone line.
+    sarvam_pace: float = field(default_factory=lambda: float(_env("SARVAM_PACE", "1.0")))
+
     # --- OpenAI voice models (STT/TTS_PROVIDER=openai) ---
     #: "gpt-4o-transcribe" is the accurate one; "gpt-4o-mini-transcribe" is
     #: cheaper and a little faster but noticeably weaker on Indic audio over a

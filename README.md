@@ -642,6 +642,42 @@ config and the server echoed it back accepted — `voice=marin`,
 `noise_reduction=near_field`. A full spoken call through the worker has not been
 run here.
 
+#### Measured turn latency, and what the OpenAI voice cannot do
+
+Two limits found on a real call, with numbers measured against a live account
+rather than estimated:
+
+| Stage | Median | |
+|---|---|---|
+| Endpointing (caller stops → turn ends) | 0.25–1.5s | `ENDPOINT_MAX_DELAY` |
+| STT final transcript | ~0.3–0.8s | `gpt-4o-transcribe`, streaming |
+| Phrasing LLM, if `NATURAL_REPLIES=true` | **1.84s** | `claude-haiku-4-5`, in the audio path |
+| OpenAI TTS time-to-first-audio | **1.29s** | `gpt-4o-mini-tts`, non-streaming |
+
+That is 3.7–5.5s of silence per turn. `NATURAL_REPLIES=false` removes the
+largest single item and is the first thing to try; it costs naturally phrased
+replies and falls back to the templates in `prompts/messages.py`.
+
+**The accent has a ceiling.** `instructions` steers *delivery* — rhythm,
+warmth, pace — but not phonetics. `gpt-4o-mini-tts` is English-phonetic, so
+Telugu, Tamil, Kannada and Bengali come out as an English speaker reading them.
+No wording in `voice_style.py` fixes this; it is the model. Indian *English* is
+fine, because there the accent lever is doing work the model can actually do.
+
+For native Indic speech, switch TTS to Sarvam and keep OpenAI for STT:
+
+```ini
+STT_PROVIDER=openai        # gpt-4o-transcribe: good Indic + code-switching
+TTS_PROVIDER=sarvam        # bulbul:v3, natively recorded per language
+SARVAM_API_KEY=...         # https://dashboard.sarvam.ai
+SARVAM_SPEAKER=            # blank = model default
+```
+
+Sarvam's TTS also reports `streaming=True` over a websocket, so it removes most
+of that 1.29s as well — one change, both problems. The plugin is already
+installed and `agent.py` already switches it per language via
+`target_language_code`.
+
 #### Zero-vendor-key pipeline (LiveKit Cloud Inference)
 
 The fastest way to a real voice call: LiveKit brokers STT and TTS through your
