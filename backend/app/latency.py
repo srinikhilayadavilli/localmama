@@ -25,7 +25,7 @@ LEVERS = {
     "TTSMetrics": "TTS_PROVIDER / SARVAM_* — Sarvam streams, OpenAI does not",
     "STTMetrics": "OPENAI_STT_MODEL — mini is faster and weaker on Indic",
     "InterruptionMetrics": "INTERRUPT_MIN_WORDS / BACKCHANNEL_BOUNDARY — noise cutting Mami off",
-    "TurnGap": "the end-to-end number. If this is slow while every component is fast, the time is in turn detection or audio length, not compute",
+    "TurnGap": "end to end, and it INCLUDES Mami speaking. If this is slow while ttft is fast, the reply is too long — shorten what she says before touching any timing setting",
 }
 
 

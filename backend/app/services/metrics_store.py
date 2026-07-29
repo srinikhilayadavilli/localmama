@@ -161,7 +161,11 @@ _FOCUS = {
     # Synthetic, and the only one that measures what the caller experiences:
     # everything else times a component. Stored in the ttfb column because it
     # is, in the end, a time to first audible byte.
-    "TurnGap": ("ttfb", "caller stops speaking -> Mami replies (what the caller feels)"),
+    # Measured to the assistant item COMPLETING, which includes speaking the
+    # reply — so a long answer inflates it. Read it as "how long the caller
+    # waited plus how long Mami talked", not as latency alone: a 22s gap on a
+    # read-back that recited a full sentence back was mostly the reciting.
+    "TurnGap": ("ttfb", "caller stops speaking -> Mami finishes replying (incl. speaking time)"),
 }
 
 
