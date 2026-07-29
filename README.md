@@ -19,6 +19,10 @@ Callers dial a phone number; the call arrives over a SIP trunk into LiveKit and
 is answered by the worker. `make cli` exercises the same conversation engine in
 a terminal, which is the quickest way to test the workflow without a phone.
 
+Every setting that was tuned against a real call — and the measurement
+behind it — is in **[docs/TUNING.md](docs/TUNING.md)**. Read it before changing
+a timing value, a threshold, or the voice.
+
 ---
 
 ## 1. Architecture

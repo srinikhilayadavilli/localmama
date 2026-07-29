@@ -1,0 +1,144 @@
+# Tuning log
+
+Every setting here was changed because a real call went wrong, and most of the
+numbers came from measuring rather than guessing. The reasoning matters more
+than the values: if you change one, this tells you what evidence to overturn.
+
+Read `make latency` alongside this — it prints the live distribution per stage
+next to the setting that moves it.
+
+---
+
+## What is actually deployed
+
+| | |
+|---|---|
+| Worker | LiveKit Cloud agent `CA_HvZQi3uySbtD`, region `ap-south` |
+| Dispatch name | `local-mama-cloud` — **named**, so it only joins rooms dispatched to it |
+| Pipeline | `AGENT_MODULE=agent_realtime` — speech-to-speech (`gpt-realtime`, voice `marin`) |
+| Phone | `+918071581496` via Vobiz → trunk `ST_xZhVG8X6KYPR` → rule `SDR_cn5WSYVL2pTD` |
+| Leads | `localmama.leads` in Neon, plus ephemeral JSON on the container |
+| Knowledge | `utter.knowledge` (shared, semantic) and `localmama.businesses` (tenant, phones) |
+
+**The deterministic pipeline (`agent.py`) is not deployed.** It exists, is
+tested, and is a switch away — `AGENT_MODULE=agent`. This matters constantly
+when reading the settings below: anything Sarvam-related is **inert** on the
+speech-to-speech path, which generates its own audio.
+
+---
+
+## Turn-taking
+
+| Setting | Value | Why |
+|---|---|---|
+| `OPENAI_REALTIME_EAGERNESS` | `high` | Semantic VAD commits sooner to "they have finished". Measured: model `ttft` is 0.34s p50, but the gap a caller feels was 4.03s p50 / 16.07s p95 — the wait was never compute. **Trade: `high` is likelier to answer over someone who pauses mid-thought.** Drop to `auto` if people get cut off. |
+| `INTERRUPT_MIN_WORDS` | `1` | LiveKit defaults this to **0**, so duration alone decided and any 0.4s of sound stopped Mami — a cough, traffic, or her own voice off the caller's speakers. 1 ignores noise (it produces no transcript) while still letting a caller cut in with a single "Telugu". 2+ would block one-word answers, which are most of what callers say here. |
+| `BACKCHANNEL_BOUNDARY` | `1.0` | A short "haan" while she is talking is agreement, not a stop request. Widen if she still stops for it. |
+| `ENDPOINTING_MODE` | `dynamic` | Lets the detector answer sooner when confident, within the min/max bounds. |
+| `HANGUP_GRACE_SECONDS` | `1.5` | **Changed meaning.** It used to be a flat 6s counted from `save_lead` — which fires *before* the goodbye is spoken, so it raced a sentence of unknown length and clipped it. Now the agent waits for the outro to start and finish; this is only the tail so the last frames reach the caller. |
+| `HANGUP_MAX_WAIT_SECONDS` | `25` | Backstop for a closing line that never comes. Without it a silent model leaves the caller on a live, metered line. |
+
+---
+
+## Voice
+
+| Setting | Value | Why |
+|---|---|---|
+| `OPENAI_REALTIME_VOICE` | `marin` | Timbre only. **No OpenAI voice is Indian**, and on the speech-to-speech path the accent can only come from the system prompt. |
+| `TTS_PROVIDER` | `sarvam` | Native Indic voices. `gpt-4o-mini-tts` is English-phonetic: `instructions` steer *delivery*, never phonemes, so it reads Telugu in an English speaker's mouth. **Inert while `AGENT_MODULE=agent_realtime`.** |
+| `SARVAM_SPEAKER` | `priya` | Chosen by ear against 6 voices; also what Vaani settled on. |
+| `SARVAM_PACE` / `SARVAM_TEMPERATURE` | `1.0` / `0.85` in code | The plugin defaults temperature to 0.6, which is flat and monotone over a phone line — heard as both "robotic" and "unclear". Raising pace to compensate only trades clarity for speed. **The deployed secret still says pace 1.15; unresolved, and inert anyway.** |
+
+Measured, Sarvam vs OpenAI TTS: **0.19s** to first audio over a websocket
+versus **1.29s**. That, plus the accent, is why the deterministic path uses it.
+
+### The accent rule
+
+`prompts/voice_style.py` is the single source. It names American, British and
+Australian in order to exclude them, forbids mirroring a caller who sounds
+American, and re-anchors after **interruptions, corrections and language
+switches** — the three moments drift was reported. Tests pin the instruction;
+nothing can pin the audio.
+
+---
+
+## Latency
+
+Measured on real calls, and the shape of it is the point:
+
+| Stage | p50 | p95 |
+|---|---|---|
+| Model `ttft` | 0.34s | 0.60s |
+| **TurnGap** (caller stops → Mami finishes) | **4.03s** | **16.07s** |
+
+`TurnGap` **includes speaking time**, so a long reply inflates it. That is the
+finding: the caller's wait is not the model thinking, it is Mami talking.
+
+Two fixes followed. The greeting went from **12.98s to 5.88s** by not reciting
+all six languages — a caller who wants Telugu simply says "Telugu", and
+`LANGUAGE_NOT_UNDERSTOOD` still lists them for anyone who did not answer. And
+the prompt now states that a long reply *is* dead air.
+
+On the deterministic path, phrasing is prefetched with placeholders
+(`{{NAME}}`, `{{SERVICE}}`, `{{LOCATION}}`) so it can be generated before the
+caller supplies the values. Hit rate went 1-in-6 → 3-in-5, and total phrasing
+wait 6.34s → 3.63s.
+
+---
+
+## Extraction and language
+
+- **Fuzzy service matching** needs comparable length for Latin tokens
+  (`"service"` is 7 of the 10 characters in `"ac service"` and scored 0.82, so
+  every "car service" became AC repair) and a stricter 0.80 cutoff for Indic,
+  where one character is a whole syllable (`"టెన్షన్"` / tension scored 0.71
+  against `"ట్యూషన్"` / tuition and filed a plumbing call as a tutor). Neither
+  guard is a blanket ban — the first attempt at each was, and both lost real
+  matches.
+- **Language names are recognised in every Indian script.** A caller saying
+  "తెలుగు" transcribed as Devanagari `"तेलुगु"` matched nothing, so script
+  detection asserted Hindi, STT was pinned to `hi`, and the call stalled.
+- **Language changes need asking twice.** One caller said "ఏది?" ("which?") and
+  the model switched the whole call to Hindi off that word.
+- **The STT prompt carries no vocabulary.** It listed Indian names to bias
+  decoding; Whisper-family models emit prompt content as transcription on
+  silence, so callers saw phantom turns reading "Suresh" and "Lakshmi" — and a
+  phantom name is captured as the caller's name.
+
+---
+
+## Knowledge and contacts
+
+Two stores, and the distinction is load-bearing:
+
+- **`brain.py` → `utter.knowledge`** — shared, semantic, answers "who does this
+  kind of work". Floor of `BRAIN_MIN_SCORE=0.35` because hybrid retrieval always
+  returns its best rows however bad: "fix my geyser" surfaced a tutoring service
+  at 0.22. Queried with the *canonical* service, since cross-lingual similarity
+  scores far lower (0.28 vs 0.63 for the same rows).
+- **`directory.py` → `localmama.businesses`** — tenant-owned, 120 rows, every
+  one with a phone. Matching is **literal**: a caller asking "what is X's
+  number?" wants an exact record, and the nearest semantic neighbour with a real
+  phone attached would send them to a stranger.
+
+A **category** is not a business: "wash" or "tutors" asks which business they
+mean, by name, and never reads out a list — that would volunteer vendors.
+Categories were tidied 59 → 50 (`scripts/tidy_categories.py`, dry run by
+default).
+
+---
+
+## Known limits
+
+- **WhatsApp cannot send.** CampaignBot resets every connection from every
+  network tested, including their own website. Vaani's telemetry shows the last
+  successful send was 2026-07-28 18:11 UTC. Credentials and payload are correct
+  and verified; the moment they are reachable it works with no redeploy.
+- **Telugu, Tamil, Bengali and Kannada are anglicised** on the deployed path,
+  because `gpt-realtime` generates its own audio. Native Indic speech requires
+  the deterministic pipeline with Sarvam, which costs the free-form feel.
+- **The trunk is open.** It accepts a call for the DID from any address, since
+  Vobiz has not said whether they use fixed IPs or digest auth.
+- **Tuning is per-tenant, in code.** The service catalogue, message tables,
+  accent block and thresholds are Local Mama's. A second customer needs these
+  behind an agent spec — see the note in the README.
