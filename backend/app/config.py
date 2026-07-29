@@ -81,6 +81,23 @@ class Settings:
     #: Fixed STT language for providers that cannot switch at runtime (Sarvam).
     stt_language: str = field(default_factory=lambda: _env("STT_LANGUAGE", "en-IN"))
 
+    # --- Knowledge base / "brain" (services/brain.py) ---
+    #: NeonDB DSN, shared with the Vaani bridge. Blank disables every lookup
+    #: cleanly rather than erroring per call.
+    database_url: str = field(default_factory=lambda: _env("DATABASE_URL"))
+    #: Scope within the shared table. The two products live in one schema and
+    #: are kept apart by these, so getting them wrong reads someone else's data
+    #: rather than failing loudly — which is why they are explicit settings.
+    brain_owner_id: str = field(default_factory=lambda: _env("BRAIN_OWNER_ID", "localmama"))
+    brain_agent_id: str = field(default_factory=lambda: _env("BRAIN_AGENT_ID", "localmama"))
+    #: Minimum blended score to count as a real match. Hybrid retrieval always
+    #: returns its best rows, however bad — "fix my geyser" surfaced a tutoring
+    #: service at 0.22 because the catalogue has no plumber. Measured on this
+    #: data: a genuine match scores ~0.4+, coincidence sits ~0.2-0.3.
+    brain_min_score: float = field(
+        default_factory=lambda: float(_env("BRAIN_MIN_SCORE", "0.35"))
+    )
+
     # --- WhatsApp lead handoff (services/whatsapp.py) ---
     #: Off until configured: a half-configured sender that 401s on every lead is
     #: worse than an honest "not sent" line in the log.

@@ -31,6 +31,17 @@ livekit-plugins-sarvam>=1.6,<2.0
 # pip install livekit-plugins-cartesia      # TTS_PROVIDER=cartesia
 # pip install livekit-plugins-elevenlabs    # TTS_PROVIDER=elevenlabs
 
+# --- knowledge base ("the brain") ---------------------------------------
+# Shared NeonDB + pgvector store, read-only from here. fastembed runs the
+# multilingual embedding locally so a lookup costs no LLM call and no vendor.
+psycopg[binary]>=3.2
+pgvector>=0.3
+# Pinned to the minor the Vaani bridge runs. fastembed 0.8 changed this
+# model from CLS to mean pooling — a different version embeds into a
+# different space, so every stored vector silently stops matching. This is
+# not a version to float.
+fastembed>=0.8,<0.9
+
 # --- dev -------------------------------------------------------------
 pytest>=8.0
 pytest-asyncio>=0.23
