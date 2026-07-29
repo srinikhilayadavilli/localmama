@@ -104,13 +104,13 @@ def _message_id(body: dict) -> str:
     return ""
 
 
-async def _post(payload: dict) -> dict:
+async def _post(payload: dict, attempts: int = 3) -> dict:
     headers = {
         "Authorization": f"Bearer {settings.whatsapp_api_key}",
         "Content-Type": "application/json",
     }
     err = ""
-    for attempt in range(1, 4):
+    for attempt in range(1, attempts + 1):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 res = await client.post(settings.whatsapp_api_url, json=payload, headers=headers)
@@ -126,25 +126,31 @@ async def _post(payload: dict) -> dict:
                 )
                 return {"ok": True, "messageId": _message_id(body)}
             err = f"HTTP {res.status_code}: {body or res.text[:200]!r}"
-            logger.warning("send rejected (attempt %d/3): %s", attempt, err)
+            logger.warning("send rejected (attempt %d/%d): %s", attempt, attempts, err)
             # A 4xx is a bad payload or a dead token; retrying cannot fix it.
             if res.status_code < 500:
                 return {"ok": False, "error": err}
         except Exception as exc:  # noqa: BLE001 - network/timeout is worth a retry
             err = repr(exc)
-            logger.warning("send failed (attempt %d/3): %s", attempt, err)
-        if attempt < 3:
+            logger.warning("send failed (attempt %d/%d): %s", attempt, attempts, err)
+        if attempt < attempts:
             await asyncio.sleep(1.5 * attempt)
     return {"ok": False, "error": err}
 
 
-async def send(lead: Lead, phone: str, options: str = "") -> dict:
-    """Send synchronously. Returns a result dict; never raises."""
+async def send(lead: Lead, phone: str, options: str = "", attempts: int = 3) -> dict:
+    """Send synchronously. Returns a result dict; never raises.
+
+    `attempts` is 1 for the periodic sweep: the sweep *is* the retry, so trying
+    three times with backoff on every lead only makes each pass longer while a
+    provider is down — 29 owed leads at three attempts each is minutes of work
+    to learn one fact.
+    """
     payload = build_payload(lead, phone, options)
     if payload is None:
         logger.info("no recipient phone on this lead — nothing sent")
         return {"ok": False, "skipped": True, "reason": "no phone"}
-    return await _post(payload)
+    return await _post(payload, attempts=attempts)
 
 
 def fire(lead: Lead, phone: str, options: str = "") -> None:

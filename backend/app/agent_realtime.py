@@ -468,19 +468,11 @@ def main() -> None:
 
     # Anything owed from a previous run — a call whose handoff never got
     # through, or whose process died before it finished — is retried here.
-    from .outbox import drain, start_periodic_sweep
-    from .services import lead_store
+    # Retries owed handoffs immediately and then on a timer, in a thread — so a
+    # backlog the provider cannot accept never delays answering the phone.
+    from .outbox import start_periodic_sweep
 
-    if lead_store.available():
-        try:
-            sent, failed = asyncio.run(drain())
-            if sent or failed:
-                logger.info("outbox on startup: sent %d, still failing %d", sent, failed)
-        except Exception as exc:  # noqa: BLE001 - never block the worker starting
-            logger.warning("outbox sweep skipped: %s", exc)
-        # And on a timer, so a provider that recovers mid-deployment does not
-        # wait for the next restart.
-        start_periodic_sweep()
+    start_periodic_sweep()
 
     if not settings.livekit_configured:
         logger.warning("LiveKit credentials are not all set; the worker cannot connect.")

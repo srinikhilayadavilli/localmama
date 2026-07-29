@@ -60,7 +60,7 @@ async def test_a_failed_send_stays_owed(monkeypatch) -> None:
     monkeypatch.setattr(lead_store, "mark_whatsapp",
                         lambda sid, ok, error="": marks.append((sid, ok, error)))
 
-    async def fails(lead, phone, options=""):
+    async def fails(lead, phone, options="", attempts=3):
         return {"ok": False, "error": "ConnectError('')"}
 
     monkeypatch.setattr(whatsapp, "send", fails)
@@ -80,7 +80,7 @@ async def test_a_successful_send_is_recorded_as_terminal(monkeypatch) -> None:
     monkeypatch.setattr(lead_store, "mark_whatsapp",
                         lambda sid, ok, error="": marks.append((sid, ok, error)))
 
-    async def succeeds(lead, phone, options=""):
+    async def succeeds(lead, phone, options="", attempts=3):
         return {"ok": True, "messageId": "abc"}
 
     monkeypatch.setattr(whatsapp, "send", succeeds)
@@ -154,3 +154,30 @@ def test_a_stranded_claim_is_reclaimed() -> None:
     from backend.app.services import lead_store
 
     assert "stale_after_minutes" in inspect.getsource(lead_store.claim_whatsapp)
+
+
+def test_the_sweep_tries_once_per_lead() -> None:
+    """The sweep IS the retry. Three attempts with backoff on every lead only
+    makes each pass longer while a provider is down — 29 owed leads at three
+    attempts each is minutes of work to learn one fact.
+    """
+    import inspect
+
+    from backend.app import outbox
+
+    assert "attempts=1" in inspect.getsource(outbox.drain)
+
+
+def test_the_first_sweep_does_not_delay_the_worker() -> None:
+    """The startup drain used to run inline before the worker registered, so a
+    backlog the provider could not accept held up answering the phone."""
+    import inspect
+
+    from backend.app import agent_realtime, outbox
+
+    # main() must only start the thread, never drain inline.
+    main_src = inspect.getsource(agent_realtime.main)
+    assert "start_periodic_sweep" in main_src
+    assert "asyncio.run(drain" not in main_src
+    # ...and the thread must sweep immediately rather than sleeping first.
+    assert "first = True" in inspect.getsource(outbox.start_periodic_sweep)

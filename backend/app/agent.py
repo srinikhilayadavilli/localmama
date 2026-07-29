@@ -306,17 +306,11 @@ def main() -> None:
     # Both workers do this: whichever one is deployed owns the outbox.
     import asyncio
 
-    from .outbox import drain, start_periodic_sweep
-    from .services import lead_store
+    # Retries owed handoffs immediately and then on a timer, in a thread — so a
+    # backlog the provider cannot accept never delays answering the phone.
+    from .outbox import start_periodic_sweep
 
-    if lead_store.available():
-        try:
-            sent, failed = asyncio.run(drain())
-            if sent or failed:
-                logger.info("outbox on startup: sent %d, still owed %d", sent, failed)
-        except Exception as exc:  # noqa: BLE001 - never block the worker starting
-            logger.warning("outbox sweep skipped: %s", exc)
-        start_periodic_sweep()
+    start_periodic_sweep()
 
     # Prove the voice works before taking calls. Without this the worker starts
     # happily, registers, accepts a job, and only then discovers it has no TTS —

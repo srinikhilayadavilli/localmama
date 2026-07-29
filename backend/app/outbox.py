@@ -74,7 +74,8 @@ async def drain(limit: int = 50) -> tuple[int, int]:
     logger.info("outbox: %d lead(s) owed a WhatsApp message", len(owed))
     sent = failed = 0
     for row in owed:
-        result = await whatsapp.send(_as_lead(row), row["caller_phone"])
+        # One attempt per lead: the sweep itself is the retry.
+        result = await whatsapp.send(_as_lead(row), row["caller_phone"], attempts=1)
         ok = bool(result.get("ok"))
         error = "" if ok else str(result.get("reason") or result.get("error") or "")
         lead_store.mark_whatsapp(row["session_id"], ok, error)
@@ -110,8 +111,17 @@ def start_periodic_sweep() -> "threading.Thread | None":
         return None
 
     def _loop() -> None:
+        # Sweep immediately, then on the interval. The first pass used to run
+        # inline in main() before the worker registered, so a backlog the
+        # provider could not accept held up accepting calls — 29 owed handoffs
+        # at three attempts each is minutes of a worker that answers nothing,
+        # and it grows with the backlog. Answering the phone matters more than
+        # draining the outbox promptly.
+        first = True
         while True:
-            time.sleep(interval)
+            if not first:
+                time.sleep(interval)
+            first = False
             try:
                 # Its own event loop: this thread is not the worker's.
                 sent, failed = asyncio.run(drain())
