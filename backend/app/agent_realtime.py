@@ -68,7 +68,7 @@ rest of the call.
 3. Ask their name. When they answer, call set_name.
 4. Ask what service they need. When they answer, call set_service with their \
 own words — do not translate it yourself.
-5. Ask which city or area. When they answer, call set_area.
+5. Ask which city they are in. When they answer, call set_city.
 6. Read all three details back and ask if they are correct. If they say no, fix \
 the wrong one by calling that tool again, then read back again.
 7. ONLY after they confirm, call save_lead. If it reports something missing, \

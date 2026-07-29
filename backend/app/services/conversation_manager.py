@@ -32,7 +32,7 @@ from ..persistence import save_lead, save_transcript
 from ..prompts.messages import MessageKey, get_message
 from ..security import TurnLimiter, sanitize_field, sanitize_utterance
 from ..state_machine import REQUIRED_FIELD, missing_fields, next_state
-from . import confirmation, response_generator, response_guard, smalltalk
+from . import confirmation, response_generator, response_guard, smalltalk, whatsapp
 from .entity_extractor import (
     MIN_CONFIDENCE,
     UNKNOWN_SERVICE_CONFIDENCE,
@@ -723,14 +723,10 @@ class ConversationManager:
             lead.city_or_area,
             lead.selected_language.value if lead.selected_language else "?",
         )
-        # Simulated WhatsApp handoff — the MVP prints instead of sending.
-        logger.info(
-            "session=%s  [SIMULATED WHATSAPP] would send %s details in %s to %s",
-            session.session_id[:8],
-            lead.requested_service,
-            lead.city_or_area,
-            lead.user_name,
-        )
+        # Real handoff when configured, a logged no-op otherwise. Fired after
+        # the lead is already on disk, and fire-and-forget, so a slow or broken
+        # provider costs the caller nothing and loses nothing.
+        whatsapp.fire(lead, phone=self.caller_id or "")
 
         reply = f"{confirmation} {closing}"
         return self._result(reply, lead=lead, final=True)

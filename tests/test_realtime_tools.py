@@ -30,7 +30,7 @@ def tools(rec: LeadRecorder) -> dict:
 
 def test_exactly_the_expected_tools_are_exposed():
     assert set(tools(LeadRecorder())) == {
-        "set_language", "set_name", "set_service", "set_area", "save_lead"
+        "set_language", "set_name", "set_service", "set_city", "save_lead"
     }
 
 
@@ -52,7 +52,7 @@ async def test_save_refuses_with_one_field_outstanding():
     await t["set_name"](name="Ravi")
     await t["set_service"](service="plumber")
     reply = await t["save_lead"]()          # no area
-    assert "area" in reply.lower()
+    assert "city" in reply.lower()
     assert rec.saved is False
 
 
@@ -62,7 +62,7 @@ async def test_save_succeeds_once_complete():
     await t["set_language"](language="English")
     await t["set_name"](name="Ravi")
     await t["set_service"](service="plumber")
-    await t["set_area"](area="Pune")
+    await t["set_city"](city="Pune")
     reply = await t["save_lead"]()
     assert "saved" in reply.lower()
     assert rec.saved is True
@@ -119,7 +119,7 @@ async def test_a_saved_lead_is_written_and_readable(isolated):
     await t["set_language"](language="తెలుగు")
     await t["set_name"](name="ఫణి కుమార్")
     await t["set_service"](service="నేను ఎలక్ట్రిషన్ కోసం వెతుకుతున్నాను")
-    await t["set_area"](area="రాజమండ్రి")
+    await t["set_city"](city="రాజమండ్రి")
     await t["save_lead"]()
 
     files = list((isolated / "leads").glob("*.json"))

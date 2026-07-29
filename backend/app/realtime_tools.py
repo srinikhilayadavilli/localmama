@@ -55,7 +55,7 @@ class LeadRecorder:
             "language": s.selected_language.value if s.selected_language else None,
             "name": s.user_name,
             "service": s.requested_service,
-            "area": s.city_or_area,
+            "city": s.city_or_area,
         }
 
     # -- tools -----------------------------------------------------------
@@ -119,19 +119,27 @@ class LeadRecorder:
             return f"Recorded service: {value}."
 
         @function_tool(
-            name="set_area",
-            description="Record the city or area where the caller needs the service.",
+            name="set_city",
+            # Named for the city rather than the area because that is what the
+            # downstream actually uses: the WhatsApp template and the vendor
+            # match key on city and ignore the locality. Asking for "area" got
+            # answers like "second floor" that no matcher can use.
+            description=(
+                "Record the CITY where the caller needs the service, e.g. "
+                "Hyderabad or Bengaluru. A locality alone (Madhapur, Koramangala) "
+                "is acceptable if that is all they give, but prefer the city."
+            ),
         )
-        async def set_area(
-            area: Annotated[str, "The city, locality, or area."],
+        async def set_city(
+            city: Annotated[str, "The city, or the locality if that is all they said."],
         ) -> str:
-            result = extract(area, expecting=ConversationState.ASK_LOCATION)
-            value = sanitize_field(result.city_or_area or area)
+            result = extract(city, expecting=ConversationState.ASK_LOCATION)
+            value = sanitize_field(result.city_or_area or city)
             if not value:
                 return "That did not look like a place. Ask them again."
             rec.session.city_or_area = value
-            logger.info("session=%s  CAPTURED area=%r", rec._short(), value)
-            return f"Recorded area: {value}."
+            logger.info("session=%s  CAPTURED city=%r", rec._short(), value)
+            return f"Recorded city: {value}."
 
         @function_tool(
             name="save_lead",
@@ -149,7 +157,7 @@ class LeadRecorder:
                 )
                 readable = ", ".join(
                     {"selected_language": "language", "user_name": "name",
-                     "requested_service": "service", "city_or_area": "area"}[f]
+                     "requested_service": "service", "city_or_area": "city"}[f]
                     for f in outstanding
                 )
                 return (
@@ -161,9 +169,17 @@ class LeadRecorder:
             s.state = ConversationState.COMPLETED
             s.conversation_status = ConversationStatus.COMPLETED
             s.completed_at = utcnow()
-            save_lead(s.to_lead())
+            lead = s.to_lead()
+            save_lead(lead)
             save_transcript(s)
             rec.saved = True
+
+            # Same handoff as the deterministic pipeline, after the lead is
+            # already durable. Skips with a log line when unconfigured or when
+            # the transport gave us no phone number.
+            from .services import whatsapp
+
+            whatsapp.fire(lead, phone=rec.caller_id or "")
 
             from . import caller_profiles
 
@@ -179,7 +195,7 @@ class LeadRecorder:
             )
             return "Lead saved. Thank the caller and close the call warmly."
 
-        return [set_language, set_name, set_service, set_area, save_lead_tool]
+        return [set_language, set_name, set_service, set_city, save_lead_tool]
 
 
 def prefill_from_profile(rec: LeadRecorder) -> list[str]:

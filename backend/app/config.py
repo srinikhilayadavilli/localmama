@@ -81,6 +81,34 @@ class Settings:
     #: Fixed STT language for providers that cannot switch at runtime (Sarvam).
     stt_language: str = field(default_factory=lambda: _env("STT_LANGUAGE", "en-IN"))
 
+    # --- WhatsApp lead handoff (services/whatsapp.py) ---
+    #: Off until configured: a half-configured sender that 401s on every lead is
+    #: worse than an honest "not sent" line in the log.
+    whatsapp_enabled: bool = field(
+        default_factory=lambda: _env_bool("WHATSAPP_ENABLED", False)
+    )
+    whatsapp_api_key: str = field(default_factory=lambda: _env("WHATSAPP_API_KEY"))
+    whatsapp_template_name: str = field(
+        default_factory=lambda: _env("WHATSAPP_TEMPLATE_NAME")
+    )
+    whatsapp_lang_code: str = field(
+        default_factory=lambda: _env("WHATSAPP_LANG_CODE", "en_US")
+    )
+    whatsapp_api_url: str = field(
+        default_factory=lambda: _env(
+            "WHATSAPP_API_URL",
+            "https://service.api.campaignbot.online/v1/whatsapp/message/send",
+        )
+    )
+    #: Text for template param {{4}} before real vendor matches exist.
+    whatsapp_param4: str = field(
+        default_factory=lambda: _env(
+            "WHATSAPP_PARAM4",
+            "Our team is shortlisting the best options for you and will share "
+            "them here shortly",
+        )
+    )
+
     # --- Sarvam (TTS_PROVIDER=sarvam) ---
     #: The Indic-native alternative. OpenAI's TTS is English-phonetic: it will
     #: read Telugu or Tamil in an English speaker's mouth no matter what the
@@ -292,6 +320,13 @@ class Settings:
     @property
     def natural_replies_available(self) -> bool:
         return self._has_llm_key and self.natural_replies_enabled
+
+    @property
+    def whatsapp_available(self) -> bool:
+        """All three are required: the flag alone sends nothing useful."""
+        return bool(
+            self.whatsapp_enabled and self.whatsapp_api_key and self.whatsapp_template_name
+        )
 
     @property
     def livekit_configured(self) -> bool:
