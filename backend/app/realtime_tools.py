@@ -19,6 +19,8 @@ Gemini is asked to do both, and asking is weaker than enforcing — see README.
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import Annotated
 
 from livekit.agents import function_tool
@@ -219,6 +221,17 @@ class LeadRecorder:
             if not directory.available():
                 return "The directory is unavailable. Say you cannot look it up right now."
 
+            # A category is not a request for anyone in particular. "wash" or
+            # "events" names a kind of business, so there is no number to give
+            # — and reeling off the businesses that happen to match would
+            # volunteer vendors the caller never asked about.
+            if await asyncio.to_thread(directory.looks_like_a_category, business):
+                return (
+                    f"{business!r} is a category, not a business. Ask the caller for "
+                    f"the NAME of the business they want the number for. Do not list "
+                    f"any businesses."
+                )
+
             matches = await directory.find_async(business, limit=4)
             if not matches:
                 return (
@@ -226,13 +239,13 @@ class LeadRecorder:
                     f"do not have that one, and do NOT guess a number."
                 )
 
-            # An exact name is an answer; several partial ones are a question.
+            # An exact name is an answer; anything vaguer is a question — asked
+            # without naming the candidates, for the same reason as above.
             exact = [m for m in matches if m.name.lower() == business.strip().lower()]
             if len(matches) > 1 and not exact:
-                names = ", ".join(m.name for m in matches)
                 return (
-                    f"Several businesses match: {names}. Ask the caller which one "
-                    f"they mean before giving any number."
+                    f"{business!r} matches more than one business. Ask the caller for "
+                    f"the full name of the one they mean. Do not read out the list."
                 )
 
             hit = exact[0] if exact else matches[0]

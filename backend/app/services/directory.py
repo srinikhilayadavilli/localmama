@@ -58,6 +58,43 @@ def _connect():
     return psycopg.connect(settings.database_url, connect_timeout=5)
 
 
+def categories() -> set[str]:
+    """Every category in the directory, lowercased. [] if unreachable.
+
+    Used to tell a category apart from a business name. "wash" and "plumber"
+    are things we do; "WOW Wash" is someone we can put you through to.
+    """
+    if not available():
+        return set()
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT lower(category) FROM localmama.businesses"
+                " WHERE category IS NOT NULL"
+            )
+            return {row[0] for row in cur.fetchall() if row[0]}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read categories: %s", exc)
+        return set()
+
+
+def looks_like_a_category(query: str) -> bool:
+    """Whether the caller named a kind of business rather than a business.
+
+    A caller who says "wash" has not asked for anyone in particular, so there is
+    no number to give — and listing the businesses that happen to match would
+    volunteer vendors they never asked about. Matched as a whole word so
+    "Car Wash" catches "wash" while "Brinda" does not catch anything.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    for category in categories():
+        if q == category or q in category.split():
+            return True
+    return False
+
+
 def find(name: str, limit: int = 5) -> list[Business]:
     """Businesses whose name or keywords match, most exact first.
 
