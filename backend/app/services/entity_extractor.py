@@ -288,6 +288,17 @@ def _format_name(candidate: str) -> str:
 # rescued and nothing spurious matches.
 _FUZZY_CUTOFF = 0.70
 _FUZZY_MIN_LENGTH = 6
+#: How close in length a token and a synonym must be to count as a typo rather
+#: than a different (usually shorter, more generic) word. "plumbr"/"plumber" is
+#: A one-character slip on the 6-char minimum gives 6/7 = 0.857, so 0.85 is the
+#: natural line. "service"/"ac service" is 0.70 and "serviced"/"ac service" is
+#: 0.80 — both are different words, and both must miss.
+_FUZZY_LENGTH_RATIO = 0.85
+#: Indic scripts pack a syllable into each character, so the same edit distance
+#: means a much bigger difference in meaning. Measured on real pairs: the
+#: legitimate variant "ఎలక్ట్రిషన్"/"ఎలక్ట్రీషియన్" scores 0.83, while the
+#: damaging "టెన్షన్"/"ట్యూషన్" (tension/tuition) scores 0.71.
+_FUZZY_CUTOFF_INDIC = 0.80
 
 #: Flat lookup of every synonym, built once for fuzzy matching.
 #:
@@ -310,15 +321,45 @@ def fuzzy_match_service(text: str) -> str | None:
     word (STT turning "plumber" into "puma") is deliberately *not* rescued,
     because guessing there would put a service in the lead that the caller
     never asked for.
+
+    Two guards keep character similarity from standing in for meaning. Both
+    were added after this function silently produced wrong leads:
+
+    1. **A stricter cutoff for Indic scripts**, where one character is a whole
+       syllable and a single substitution is a different word rather than a
+       slip. "టెన్షన్" (tension, from a caller describing their stress) scored
+       0.71 against "ట్యూషన్" (tuition) and filed a plumbing call as a tutor.
+       Not a blanket ban: "ఎలక్ట్రిషన్" is a real spelling variant of the
+       catalogue's "ఎలక్ట్రీషియన్" and must still be rescued — it scores 0.83,
+       so the line sits between them. That margin is thin; widen the catalogue
+       with real variants rather than lowering this.
+
+    2. **Comparable length.** A typo barely changes a word's length. A short
+       word that merely *sits inside* a longer synonym is not a typo, it is an
+       incomplete phrase — and "service" is 7 of the 10 characters in "ac
+       service", scoring 0.82. That made every "car service", "bike service"
+       and "RO service" come out as AC repair.
     """
     for token in normalize_text(text).split():
         if len(token) < _FUZZY_MIN_LENGTH:
             continue
+        cutoff = _FUZZY_CUTOFF if token.isascii() else _FUZZY_CUTOFF_INDIC
         close = difflib.get_close_matches(
-            token, list(_ALL_SYNONYMS), n=1, cutoff=_FUZZY_CUTOFF
+            token, list(_ALL_SYNONYMS), n=1, cutoff=cutoff
         )
-        if close:
-            return _ALL_SYNONYMS[close[0]]
+        if not close:
+            continue
+        candidate = close[0]
+        # The length guard targets a Latin, multi-word failure: a generic word
+        # sitting inside a longer synonym ("service" in "ac service"). Indic
+        # synonyms here are single words, and applying it there would reject
+        # "ఎలక్ట్రిషన్"/"ఎలక్ట్రీషియన్" at 0.846 — a real variant. On that side
+        # the stricter cutoff above is what separates good from bad.
+        if token.isascii():
+            length_ratio = min(len(token), len(candidate)) / max(len(token), len(candidate))
+            if length_ratio < _FUZZY_LENGTH_RATIO:
+                continue
+        return _ALL_SYNONYMS[candidate]
     return None
 
 

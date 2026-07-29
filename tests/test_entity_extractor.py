@@ -6,6 +6,7 @@ import pytest
 
 from backend.app.models import ConversationState
 from backend.app.services.entity_extractor import (
+    fuzzy_match_service,
     extract,
     match_city,
     match_service,
@@ -251,3 +252,55 @@ def test_a_place_answered_at_the_service_step_is_not_a_service():
     result = extract("Madhapur, Hyderabad.", expecting=SERVICE)
     assert result.requested_service is None
     assert result.city_or_area is not None
+
+
+# --- fuzzy matching must not stand in for meaning ----------------------
+#
+# `fuzzy_match_service` exists to rescue a garbled trade name ("plumbr"). Left
+# on character similarity alone it also "rescued" words that were simply
+# different, and both failures reached real leads.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # "service" is 7 of the 10 characters in the synonym "ac service" and
+        # scored 0.82, so every one of these was filed as AC repair.
+        "car service",
+        "I need my car serviced",
+        "bike service",
+        "RO service",
+        "serviced",
+        # One Indic character is a whole syllable. "టెన్షన్" (tension, from a
+        # caller describing their stress) scored 0.71 against "ట్యూషన్"
+        # (tuition) and filed a plumbing call as a tutor.
+        "టెన్షన్",
+        "చాలా టెన్షన్‌గా ఉంది",
+        "అయ్యో మా బాత్రూంలో నీళ్ళు నిండిపోయాయి, చాలా టెన్షన్‌గా ఉంది",
+    ],
+)
+def test_fuzzy_does_not_invent_a_trade(text: str) -> None:
+    assert fuzzy_match_service(text) is None
+
+
+@pytest.mark.parametrize(
+    "typo,expected",
+    [
+        ("plumbr", "plumber"),
+        ("plumbur", "plumber"),
+        ("electrican", "electrician"),
+        ("carpentr", "carpenter"),
+        ("painterr", "painter"),
+        ("mechanik", "mechanic"),
+    ],
+)
+def test_fuzzy_still_rescues_a_real_typo(typo: str, expected: str) -> None:
+    """The guards must not cost us the thing this function is for."""
+    assert fuzzy_match_service(typo) == expected
+
+
+def test_exact_synonyms_are_unaffected() -> None:
+    """These go through match_service, which the guards do not touch."""
+    assert match_service("ac service") == "ac repair"
+    assert match_service("geyser") == "appliance repair"
+    assert match_service("ప్లంబర్ కావాలి") == "plumber"
