@@ -89,6 +89,13 @@ class Settings:
     hangup_grace_seconds: float = field(
         default_factory=lambda: float(_env("HANGUP_GRACE_SECONDS", "1.5"))
     )
+    #: How long shutdown waits for post-call work — the durable write and the
+    #: WhatsApp attempt — before giving up on it. Anything unfinished is left
+    #: in the outbox rather than lost, so this is a latency bound on shutdown,
+    #: not a correctness one.
+    shutdown_drain_seconds: float = field(
+        default_factory=lambda: float(_env("SHUTDOWN_DRAIN_SECONDS", "10"))
+    )
     #: Backstop for the case where the closing line never comes. Without it a
     #: model that says nothing would leave the caller holding a live, metered
     #: line indefinitely.

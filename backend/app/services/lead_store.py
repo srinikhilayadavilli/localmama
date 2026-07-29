@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS localmama.leads (
 );
 CREATE INDEX IF NOT EXISTS idx_leads_agent   ON localmama.leads(agent_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_leads_phone   ON localmama.leads(caller_phone);
+-- The outbox. A lead whose WhatsApp handoff has not succeeded is work still
+-- owed to a customer, so the state lives next to the lead rather than in a
+-- process that dies when the call ends.
+ALTER TABLE localmama.leads ADD COLUMN IF NOT EXISTS whatsapp_status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE localmama.leads ADD COLUMN IF NOT EXISTS whatsapp_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE localmama.leads ADD COLUMN IF NOT EXISTS whatsapp_error TEXT;
+ALTER TABLE localmama.leads ADD COLUMN IF NOT EXISTS whatsapp_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_leads_outbox ON localmama.leads(agent_id, whatsapp_status)
+    WHERE whatsapp_status = 'pending';
 """
 
 _schema_ready = False
@@ -117,3 +126,57 @@ def save(lead: Lead, caller_phone: str = "") -> bool:
             lead.session_id[:8], exc,
         )
         return False
+
+
+def mark_whatsapp(session_id: str, ok: bool, error: str = "") -> None:
+    """Record the outcome of a handoff attempt. Never raises.
+
+    `sent` is terminal. `pending` means it is still owed and will be retried;
+    `skipped` means there was nothing to send to (no phone number), which is not
+    a failure and must not be retried forever.
+    """
+    if not available():
+        return
+    status = "sent" if ok else ("skipped" if error == "no phone" else "pending")
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE localmama.leads SET whatsapp_status = %s,"
+                " whatsapp_attempts = whatsapp_attempts + 1,"
+                " whatsapp_error = %s, whatsapp_at = now()"
+                " WHERE session_id = %s",
+                (status, (error or None), session_id),
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not record whatsapp status: %s", exc)
+
+
+def pending_whatsapp(limit: int = 50, max_attempts: int = 25) -> list[dict]:
+    """Leads still owed a WhatsApp message, oldest first.
+
+    `max_attempts` stops a permanently broken lead being retried forever — a
+    bad phone number would otherwise be attempted on every worker start for
+    the rest of the deployment's life.
+    """
+    if not available():
+        return []
+    try:
+        with _connect() as conn:
+            _ensure_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT session_id, caller_phone, name, service, city, language,"
+                    " whatsapp_attempts FROM localmama.leads"
+                    " WHERE agent_id = %s AND whatsapp_status = 'pending'"
+                    "   AND caller_phone IS NOT NULL"
+                    "   AND whatsapp_attempts < %s"
+                    " ORDER BY created_at LIMIT %s",
+                    (settings.brain_agent_id, max_attempts, limit),
+                )
+                cols = ["session_id", "caller_phone", "name", "service", "city",
+                        "language", "attempts"]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read the outbox: %s", exc)
+        return []

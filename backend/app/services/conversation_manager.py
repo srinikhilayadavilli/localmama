@@ -803,7 +803,14 @@ class ConversationManager:
         """
         async def _run() -> None:
             await asyncio.to_thread(lead_store.save, lead, self.caller_id or "")
-            whatsapp.fire(lead, phone=self.caller_id or "")
+            # Awaited so the outcome can be recorded: a lead that did not get
+            # through stays in the outbox and is retried later.
+            result = await whatsapp.send(lead, self.caller_id or "")
+            lead_store.mark_whatsapp(
+                lead.session_id,
+                bool(result.get("ok")),
+                str(result.get("reason") or result.get("error") or ""),
+            )
 
         try:
             task = asyncio.create_task(_run())
@@ -815,6 +822,18 @@ class ConversationManager:
         # the lead silently never reaching Postgres.
         self._background.add(task)
         task.add_done_callback(self._background.discard)
+        task.add_done_callback(self._log_background_failure)
+
+
+    @staticmethod
+    def _log_background_failure(task) -> None:  # noqa: ANN001 - asyncio.Task
+        """asyncio drops the result of an unawaited task, so a failure here
+        reached neither the logs nor anyone looking for it."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("post-call work failed", exc_info=exc)
 
     def _render(self, key: MessageKey) -> str:
         session = self.session

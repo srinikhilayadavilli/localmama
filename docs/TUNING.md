@@ -138,6 +138,25 @@ default).
 
 ## Known limits
 
+### When post-call work fails
+
+Persisting the lead and the WhatsApp handoff run after the turn returns, so a
+failure there is invisible to the caller — which is exactly why it needs a
+paper trail. `localmama.leads.whatsapp_status` is the outbox: `pending` until a
+send succeeds (`sent`) or there was no number to send to (`skipped`).
+
+- Task exceptions are logged. `add_done_callback(discard)` never inspected
+  `.exception()`, so failures reached nobody.
+- Shutdown waits up to `SHUTDOWN_DRAIN_SECONDS` (10). The agent hangs up ~1.5s
+  after the outro and the process exits, while a WhatsApp attempt takes several
+  seconds — so this work was being killed mid-flight.
+- The worker drains the outbox **on startup**, and `make outbox` reports what is
+  owed. Retries stop after 25 attempts so a permanently bad number is not tried
+  forever.
+
+Three in-call retries were the wrong shape for the actual failure — a provider
+down for hours wants trying again later, not trying harder now.
+
 - **WhatsApp cannot send.** CampaignBot resets every connection from every
   network tested, including their own website. Vaani's telemetry shows the last
   successful send was 2026-07-28 18:11 UTC. Credentials and payload are correct

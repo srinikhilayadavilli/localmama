@@ -368,6 +368,23 @@ async def entrypoint(ctx: JobContext) -> None:
         )
 
     async def on_shutdown() -> None:
+        # Let post-call work finish before the process dies.
+        #
+        # The agent hangs up ~1.5s after the outro and the job process exits
+        # shortly after, while the durable write and the WhatsApp attempt can
+        # take several seconds. Without this they were being killed mid-flight,
+        # which is the difference between "retried later" and "lost".
+        if recorder.background:
+            done, pending = await asyncio.wait(
+                recorder.background, timeout=settings.shutdown_drain_seconds
+            )
+            if pending:
+                logger.warning(
+                    "session=%s  %d background task(s) unfinished at shutdown; "
+                    "the outbox will retry them",
+                    recorder.session.session_id[:8], len(pending),
+                )
+
         # Written off the event loop, at the end, in one batch.
         if turn_metrics:
             await asyncio.to_thread(
@@ -448,6 +465,19 @@ async def entrypoint(ctx: JobContext) -> None:
 
 def main() -> None:
     setup_logging()
+
+    # Anything owed from a previous run — a call whose handoff never got
+    # through, or whose process died before it finished — is retried here.
+    from .outbox import drain
+    from .services import lead_store
+
+    if lead_store.available():
+        try:
+            sent, failed = asyncio.run(drain())
+            if sent or failed:
+                logger.info("outbox on startup: sent %d, still failing %d", sent, failed)
+        except Exception as exc:  # noqa: BLE001 - never block the worker starting
+            logger.warning("outbox sweep skipped: %s", exc)
 
     if not settings.livekit_configured:
         logger.warning("LiveKit credentials are not all set; the worker cannot connect.")

@@ -36,6 +36,20 @@ from .state_machine import missing_fields
 logger = get_logger("localmama.realtime.tools")
 
 
+def _log_if_failed(task) -> None:  # noqa: ANN001 - asyncio.Task
+    """Surface an exception from post-call work.
+
+    asyncio drops the result of a task nobody awaits, so a failure here reached
+    neither the logs nor the caller. The lead is on disk and in the outbox
+    either way, but a silent failure is one nobody goes looking for.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("post-call work failed", exc_info=exc)
+
+
 class LeadRecorder:
     """Holds the session and exposes the tools Gemini may call."""
 
@@ -332,13 +346,24 @@ class LeadRecorder:
                         s.requested_service, city=s.city_or_area
                     )
                     options = brain.options_line(hits)
-                whatsapp.fire(lead, phone=rec.caller_id or "", options=options)
+                # Awaited, not fired: the outcome is recorded so a lead that
+                # did not get through stays in the outbox and is retried later,
+                # rather than being lost when this process exits.
+                result = await whatsapp.send(
+                    lead, rec.caller_id or "", options=options
+                )
+                lead_store.mark_whatsapp(
+                    lead.session_id,
+                    bool(result.get("ok")),
+                    str(result.get("reason") or result.get("error") or ""),
+                )
 
             task = asyncio.create_task(_finish_in_background())
             # Held, or asyncio may collect it mid-await and the lead never
             # reaches Postgres — the same failure that once swallowed turns.
             rec.background.add(task)
             task.add_done_callback(rec.background.discard)
+            task.add_done_callback(_log_if_failed)
             logger.info(
                 "session=%s  LEAD SAVED: %s / %s / %s (%s)",
                 rec._short(), s.user_name, s.requested_service, s.city_or_area,

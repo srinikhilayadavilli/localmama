@@ -2,7 +2,7 @@ PY ?= python3.11
 VENV := .venv
 BIN := $(VENV)/bin
 
-.PHONY: help setup cli demo voices agent agent-realtime agent-gemini latency test clean
+.PHONY: help setup cli demo voices agent agent-realtime agent-gemini latency outbox test clean
 
 help:
 	@echo "Local Mama — MVP"
@@ -15,6 +15,7 @@ help:
 	@echo "  make agent   Start the LiveKit voice worker (needs LiveKit keys)"
 	@echo "  make agent-realtime  OpenAI Realtime speech-to-speech worker (EXPERIMENT, no state machine)"
 	@echo "  make agent-gemini    Same worker on Gemini Live, for comparison"
+	@echo "  make outbox  WhatsApp handoffs still owed to callers"
 	@echo "  make latency Where the caller's wait goes, from real call metrics"
 	@echo "  make clean   Remove venv, caches, and generated data"
 
@@ -47,6 +48,9 @@ agent-gemini:
 
 latency:
 	$(BIN)/python -m backend.app.latency
+
+outbox:
+	$(BIN)/python -m backend.app.outbox --status
 
 test:
 	$(BIN)/python -m pytest -q
