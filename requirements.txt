@@ -19,13 +19,17 @@ livekit-api>=0.8
 # `make agent`; the browser demo path does not require these.
 livekit-plugins-openai>=1.6,<2.0
 livekit-plugins-silero>=1.6,<2.0
+# Sarvam is the TTS in production: natively recorded Indic voices, where
+# OpenAI's is English-phonetic. It ships here rather than as an optional extra
+# because a provider named in .env but missing from the image does not degrade
+# — build_tts returns None and agent.py exits with "the agent cannot speak".
+livekit-plugins-sarvam>=1.6,<2.0
 
 # --- Other STT/TTS plugins: install only if you select them in .env ---
 # pip install livekit-plugins-deepgram      # STT_PROVIDER=deepgram
 # pip install livekit-plugins-google        # STT/TTS_PROVIDER=google
 # pip install livekit-plugins-cartesia      # TTS_PROVIDER=cartesia
 # pip install livekit-plugins-elevenlabs    # TTS_PROVIDER=elevenlabs
-# pip install livekit-plugins-sarvam        # STT/TTS_PROVIDER=sarvam
 
 # --- dev -------------------------------------------------------------
 pytest>=8.0

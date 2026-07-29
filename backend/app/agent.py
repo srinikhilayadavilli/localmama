@@ -244,6 +244,20 @@ def main() -> None:
             "LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are not all set — "
             "the worker will fail to connect. See README 'LiveKit voice path'."
         )
+
+    # Prove the voice works before taking calls. Without this the worker starts
+    # happily, registers, accepts a job, and only then discovers it has no TTS —
+    # so every caller joins and hears silence, and the only clue is one line
+    # buried in the per-call logs. A provider named in .env but absent from the
+    # image (a plugin left out of requirements.txt) fails exactly this way.
+    if build_tts(Language.ENGLISH) is None:
+        logger.error(
+            "STARTUP CHECK FAILED: TTS_PROVIDER=%r produced no usable TTS, so "
+            "this worker would answer every call with silence. Check that its "
+            "plugin is installed in this environment and its API key is set.",
+            settings.tts_provider,
+        )
+
     agents.cli.run_app(server)
 
 
