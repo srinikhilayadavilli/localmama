@@ -145,8 +145,16 @@ class Settings:
     sarvam_tts_model: str = field(
         default_factory=lambda: _env("SARVAM_TTS_MODEL", "bulbul:v3")
     )
-    #: Speaking rate. Slightly under 1.0 reads more clearly on a phone line.
+    #: Speaking rate. 1.0 is what the Vaani deployment settled on against real
+    #: phone calls; 0.9 read as dragging.
     sarvam_pace: float = field(default_factory=lambda: float(_env("SARVAM_PACE", "1.0")))
+    #: Prosody variation. The plugin default of 0.6 is flat and monotone, which
+    #: over a phone line is heard as both "robotic" and "unclear" — and pushing
+    #: the pace up to compensate only trades clarity for speed. 0.85 is the
+    #: value Vaani arrived at on the same voice and the same provider.
+    sarvam_temperature: float = field(
+        default_factory=lambda: float(_env("SARVAM_TEMPERATURE", "0.85"))
+    )
 
     # --- OpenAI voice models (STT/TTS_PROVIDER=openai) ---
     #: "gpt-4o-transcribe" is the accurate one; "gpt-4o-mini-transcribe" is

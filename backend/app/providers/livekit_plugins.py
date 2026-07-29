@@ -167,6 +167,7 @@ def build_tts(language: Language):
                 "target_language_code": locale,
                 "model": settings.sarvam_tts_model,
                 "pace": settings.sarvam_pace,
+                "temperature": settings.sarvam_temperature,
             }
             if settings.sarvam_speaker:
                 kwargs["speaker"] = settings.sarvam_speaker

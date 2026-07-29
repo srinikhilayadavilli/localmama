@@ -238,3 +238,35 @@ async def test_restating_the_current_language_is_harmless():
     await t["set_language"](language="telugu")
     await t["set_language"](language="telugu")
     assert rec.session.selected_language is Language.TELUGU
+
+
+# --- the model must never be told less than it has --------------------
+
+
+@pytest.mark.asyncio
+async def test_correcting_a_name_reports_the_other_fields_intact():
+    """Reported as "fixing one thing makes it forget the rest". The values were
+    never lost — the tool reply mentioned only the field just written, so the
+    model re-anchored on that and re-asked for the rest."""
+    rec = LeadRecorder()
+    t = tools(rec)
+    await t["set_language"](language="telugu")
+    await t["set_name"](name="Ravi")
+    await t["set_service"](service="plumber")
+    await t["set_city"](city="Hyderabad")
+
+    reply = await t["set_name"](name="Ravi Kumar")
+    assert "Ravi Kumar" in reply
+    assert "plumber" in reply, "the service must still be reported"
+    assert "Hyderabad" in reply, "the city must still be reported"
+    assert "STILL NEEDED: nothing" in reply
+
+
+@pytest.mark.asyncio
+async def test_state_line_lists_what_is_outstanding():
+    rec = LeadRecorder()
+    t = tools(rec)
+    reply = await t["set_name"](name="Ravi")
+    assert "STILL NEEDED" in reply
+    for field in ("service", "city"):
+        assert field in reply.split("STILL NEEDED")[1]

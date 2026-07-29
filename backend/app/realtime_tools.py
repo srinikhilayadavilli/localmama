@@ -61,6 +61,32 @@ class LeadRecorder:
             "city": s.city_or_area,
         }
 
+
+    def state_line(self) -> str:
+        """Everything held so far, appended to every tool result.
+
+        The model tracks the conversation in its own context, and our tools used
+        to answer "Recorded name: X." — mentioning only the field just written.
+        After a correction it would re-anchor on that reply and re-ask for the
+        service and city it had already collected. The values were never lost;
+        the model simply stopped being told about them.
+
+        Repeating the full state on every write is cheap and makes forgetting
+        structurally hard: the last tool result in context always lists what is
+        held and what is outstanding.
+        """
+        s = self.session
+        held = {
+            "language": s.selected_language.value if s.selected_language else None,
+            "name": s.user_name,
+            "service": s.requested_service,
+            "city": s.city_or_area,
+        }
+        have = ", ".join(f"{k}={v}" for k, v in held.items() if v) or "nothing yet"
+        missing = [k for k, v in held.items() if not v]
+        need = ", ".join(missing) if missing else "nothing — you may read back and save"
+        return f" [HELD: {have}. STILL NEEDED: {need}. Do not ask again for anything HELD.]"
+
     # -- tools -----------------------------------------------------------
 
     def build_tools(self) -> list:
@@ -114,7 +140,7 @@ class LeadRecorder:
             rec.pending_language = None
             rec.session.selected_language = resolved
             logger.info("session=%s  CAPTURED language=%s", rec._short(), resolved.value)
-            return f"Recorded language: {resolved.value}."
+            return f"Recorded language: {resolved.value}." + rec.state_line()
 
         @function_tool(
             name="set_name",
@@ -128,7 +154,7 @@ class LeadRecorder:
                 return "That did not look like a name. Ask them again."
             rec.session.user_name = cleaned
             logger.info("session=%s  CAPTURED name=%r", rec._short(), cleaned)
-            return f"Recorded name: {cleaned}."
+            return f"Recorded name: {cleaned}." + rec.state_line()
 
         @function_tool(
             name="set_service",
@@ -151,7 +177,7 @@ class LeadRecorder:
                 "session=%s  CAPTURED service=%r (from %r, conf=%.2f)",
                 rec._short(), value, service, result.confidence,
             )
-            return f"Recorded service: {value}."
+            return f"Recorded service: {value}." + rec.state_line()
 
         @function_tool(
             name="set_city",
@@ -174,7 +200,7 @@ class LeadRecorder:
                 return "That did not look like a place. Ask them again."
             rec.session.city_or_area = value
             logger.info("session=%s  CAPTURED city=%r", rec._short(), value)
-            return f"Recorded city: {value}."
+            return f"Recorded city: {value}." + rec.state_line()
 
         @function_tool(
             name="lookup_services",
