@@ -36,6 +36,7 @@ Run:  python -m backend.app.agent_realtime dev
 from __future__ import annotations
 
 import asyncio
+import time
 
 from livekit import agents
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext
@@ -50,6 +51,23 @@ from .services.conversation_manager import abandon
 logger = get_logger("localmama.realtime")
 
 server = AgentServer()
+
+
+def _prewarm(proc) -> None:  # noqa: ANN001 - livekit JobProcess
+    """Runs inside every job process before it is handed a call.
+
+    This is the only place a warm-up actually helps. LiveKit executes each job
+    in its own process, so loading the embedding model in `main()` warmed the
+    parent and left every job process cold — the first lookup_services still
+    paid the load, mid-conversation, and a live call showed 13s of silence
+    while it happened.
+    """
+    from .services import brain
+
+    brain.warm()
+
+
+server.setup_fnc = _prewarm
 
 #: Gemini Live voices. "Puck" is the plugin default; these are worth comparing
 #: by ear for an Indian audience.
@@ -272,7 +290,14 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("mami: %s", text)
         logger.info("  captured so far: %s", recorder.snapshot())
 
+    # Timed: a live call showed 16s between the session starting and the
+    # greeting being spoken, with the caller talking into silence twice while
+    # waiting. Which half is slow — connecting the realtime session, or the
+    # model's first response to a ~1200-token system prompt — is not something
+    # the vendor's logs answer, so measure both.
+    _t0 = time.monotonic()
     await session.start(agent=agent, room=ctx.room)
+    logger.info("session.start took %.2fs", time.monotonic() - _t0)
 
     # Neither vendor's realtime model speaks first on its own — without this
     # the caller joins to silence. (The "Welcome...Welcome..." stutter that
@@ -284,7 +309,9 @@ async def entrypoint(ctx: JobContext) -> None:
     # trade: much faster turns, no opening line. gpt-realtime accepts it, so
     # the OpenAI path keeps both.
     try:
+        _t1 = time.monotonic()
         await session.generate_reply(instructions="Greet the caller and begin.")
+        logger.info("greeting generate_reply took %.2fs", time.monotonic() - _t1)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "this model does not support an agent-initiated greeting (%s); "
@@ -335,11 +362,6 @@ async def entrypoint(ctx: JobContext) -> None:
 def main() -> None:
     setup_logging()
 
-    # Before any caller is on the line. The first lookup used to construct the
-    # embedding model mid-conversation, costing ten seconds of dead air.
-    from .services import brain
-
-    brain.warm()
     if not settings.livekit_configured:
         logger.warning("LiveKit credentials are not all set; the worker cannot connect.")
     if settings.realtime_provider == "gemini":
