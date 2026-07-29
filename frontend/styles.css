@@ -186,6 +186,28 @@ button.recording { border-color: #e5484d; color: #ff9ba0; }
 
 .hint { color: var(--muted); font-size: 12px; margin: 10px 2px 0; }
 
+/* Real voice call over LiveKit — visually separated from the Web Speech
+   controls above, because it is a different audio path, not another button. */
+.lk-call {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.lk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.lk-head h3 { margin: 0; font-size: 14px; }
+.lk-call .hint { margin-top: 8px; }
+/* Holds the agent's <audio> element: it must be in the DOM to play, but there
+   is nothing to look at — the browser's own controls would just be clutter. */
+.lk-audio { display: none; }
+
 .states { list-style: none; margin: 0; padding: 0; counter-reset: s; }
 .states li {
   counter-increment: s;

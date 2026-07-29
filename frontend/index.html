@@ -50,6 +50,23 @@
         Mic uses your browser's built-in speech recognition (Chrome/Edge work best).
         Text mode drives the identical workflow with no microphone.
       </p>
+
+      <!-- The other audio path. Everything above is the browser's own speech
+           engine; this connects to the LiveKit worker and OpenAI's voices. -->
+      <div class="lk-call">
+        <div class="lk-head">
+          <h3>Real voice call — OpenAI models</h3>
+          <span id="lk-status" class="badge off">idle</span>
+        </div>
+        <div class="controls">
+          <button id="btn-lk-call" class="primary">📞 Call Mami</button>
+          <button id="btn-lk-hangup" disabled>Hang up</button>
+        </div>
+        <p class="hint" id="lk-hint">
+          Calls the LiveKit worker, so you hear Mami's real OpenAI voice.
+        </p>
+        <div id="lk-audio" class="lk-audio"></div>
+      </div>
     </section>
 
     <!-- Right: live agent state -->
@@ -92,6 +109,10 @@
     <span id="toast-body"></span>
   </div>
 
+  <!-- Pinned rather than @2: a floating major means the page can change
+       behaviour on a CDN refresh with no commit here to explain it. -->
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.21.0/dist/livekit-client.umd.min.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/livekit-call.js"></script>
 </body>
 </html>
