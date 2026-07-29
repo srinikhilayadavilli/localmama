@@ -61,31 +61,21 @@ _MESSAGES: dict[MessageKey, dict[Language, str]] = {
         Language.TAMIL: "லோக்கல் மாமாவிற்கு மீண்டும் வரவேற்கிறோம், {name}! நான் மாமி பேசுகிறேன்.",
         Language.KANNADA: "ಲೋಕಲ್ ಮಾಮಾಗೆ ಮತ್ತೆ ಸ್ವಾಗತ, {name}! ನಾನು ಮಾಮಿ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ.",
     },
+    # Deliberately does NOT recite the six languages.
+    #
+    # It used to, and the greeting took 10.8 seconds to speak — measured off a
+    # live call. Callers hung up during it: on one recorded call the caller
+    # spoke 4s in and disconnected before Mami finished. The list is also
+    # unnecessary, because a caller who wants Telugu simply says "Telugu"; the
+    # only person who needs the menu is one who did not answer, and
+    # LANGUAGE_NOT_UNDERSTOOD gives them the full list.
     MessageKey.ASK_LANGUAGE: {
-        Language.ENGLISH: (
-            "Which Indian language would you like to speak with me? "
-            "English, Hindi, Bengali, Telugu, Tamil, or Kannada?"
-        ),
-        Language.HINDI: (
-            "आप मुझसे किस भारतीय भाषा में बात करना चाहेंगे? "
-            "अंग्रेज़ी, हिंदी, बंगाली, तेलुगु, तमिल या कन्नड़?"
-        ),
-        Language.BENGALI: (
-            "আপনি আমার সঙ্গে কোন ভারতীয় ভাষায় কথা বলতে চান? "
-            "ইংরেজি, হিন্দি, বাংলা, তেলুগু, তামিল নাকি কন্নড়?"
-        ),
-        Language.TELUGU: (
-            "మీరు నాతో ఏ భారతీయ భాషలో మాట్లాడాలనుకుంటున్నారు? "
-            "ఇంగ్లీష్, హిందీ, బెంగాలీ, తెలుగు, తమిళం లేదా కన్నడ?"
-        ),
-        Language.TAMIL: (
-            "நீங்கள் என்னுடன் எந்த இந்திய மொழியில் பேச விரும்புகிறீர்கள்? "
-            "ஆங்கிலம், இந்தி, வங்காளம், தெலுங்கு, தமிழ் அல்லது கன்னடம்?"
-        ),
-        Language.KANNADA: (
-            "ನೀವು ನನ್ನೊಂದಿಗೆ ಯಾವ ಭಾರತೀಯ ಭಾಷೆಯಲ್ಲಿ ಮಾತನಾಡಲು ಬಯಸುತ್ತೀರಿ? "
-            "ಇಂಗ್ಲಿಷ್, ಹಿಂದಿ, ಬಂಗಾಳಿ, ತೆಲುಗು, ತಮಿಳು ಅಥವಾ ಕನ್ನಡ?"
-        ),
+        Language.ENGLISH: "Which language would you like to speak?",
+        Language.HINDI: "आप किस भाषा में बात करना चाहेंगे?",
+        Language.BENGALI: "আপনি কোন ভাষায় কথা বলতে চান?",
+        Language.TELUGU: "మీరు ఏ భాషలో మాట్లాడాలనుకుంటున్నారు?",
+        Language.TAMIL: "நீங்கள் எந்த மொழியில் பேச விரும்புகிறீர்கள்?",
+        Language.KANNADA: "ನೀವು ಯಾವ ಭಾಷೆಯಲ್ಲಿ ಮಾತನಾಡಲು ಬಯಸುತ್ತೀರಿ?",
     },
     MessageKey.LANGUAGE_NOT_UNDERSTOOD: {
         Language.ENGLISH: (
