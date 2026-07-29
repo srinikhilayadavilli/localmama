@@ -84,9 +84,21 @@ def _as_dict(metric: Any) -> dict:
 
 
 def to_row(metric: Any) -> dict:
-    """One metrics event flattened into the columns we query on."""
+    """One metrics event flattened into the columns we query on.
+
+    Negative values are dropped rather than stored. LiveKit uses -1 as "not
+    measurable" — a cancelled or interrupted response has no time-to-first-
+    token — and averaging that as if it were a duration produced a median ttft
+    of MINUS one second, which is how the first run of `make latency` reported
+    a stage as faster than instantaneous.
+    """
     data = _as_dict(metric)
-    num = lambda k: data.get(k) if isinstance(data.get(k), (int, float)) else None  # noqa: E731
+
+    def num(key: str):
+        value = data.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+        return value if value >= 0 else None
     return {
         "kind": type(metric).__name__,
         "eou_delay": num("end_of_utterance_delay"),

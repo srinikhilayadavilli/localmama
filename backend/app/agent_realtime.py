@@ -54,21 +54,6 @@ logger = get_logger("localmama.realtime")
 server = AgentServer()
 
 
-def _prewarm(proc) -> None:  # noqa: ANN001 - livekit JobProcess
-    """Runs inside every job process before it is handed a call.
-
-    This is the only place a warm-up actually helps. LiveKit executes each job
-    in its own process, so loading the embedding model in `main()` warmed the
-    parent and left every job process cold — the first lookup_services still
-    paid the load, mid-conversation, and a live call showed 13s of silence
-    while it happened.
-    """
-    from .services import brain
-
-    brain.warm()
-
-
-server.setup_fnc = _prewarm
 
 #: Gemini Live voices. "Puck" is the plugin default; these are worth comparing
 #: by ear for an Indian audience.
@@ -412,7 +397,15 @@ async def entrypoint(ctx: JobContext) -> None:
 
     # Held in a local so the task is not garbage-collected mid-await.
     hangup_task = asyncio.create_task(hang_up_when_finished())
-    ctx.add_shutdown_callback(lambda: hangup_task.cancel())
+
+    async def _cancel_hangup() -> None:
+        # Must be a coroutine: LiveKit awaits shutdown callbacks, and
+        # `task.cancel()` returns a bool — awaiting that raised
+        # "TypeError: object bool can't be used in 'await' expression"
+        # on every single call, after the caller had already hung up.
+        hangup_task.cancel()
+
+    ctx.add_shutdown_callback(_cancel_hangup)
 
 
 def main() -> None:

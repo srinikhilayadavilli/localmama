@@ -73,13 +73,18 @@ def available() -> bool:
 
 
 def warm() -> None:
-    """Load the embedding model before any caller is on the line.
+    """Load the embedding model up front.
 
-    Called at worker startup. Without it the model was constructed on the first
-    `lookup_services` of the first call — which meant a HuggingFace download and
-    ten seconds of dead air mid-conversation, long enough for the caller to ask
-    whether anyone was still there. The Dockerfile bakes the files into the
-    image; this pays the load cost too.
+    NOT called per job process. Doing that put the ~500MB model into all eight
+    of LiveKit's idle processes at once: memory went from 0.8GB to 2GB of 4GB
+    with 58 warnings, and calls started failing. `retrieve_async` already runs
+    the load off the event loop, so a cold first lookup costs a few seconds in
+    a worker thread while the agent keeps talking — much cheaper than holding
+    the model resident eight times over.
+
+    Kept for a single-process deployment, where it is safe and useful. The
+    Dockerfile still bakes the model files into the image, so even a cold load
+    reads from disk rather than fetching from HuggingFace mid-call.
     """
     if not available():
         return

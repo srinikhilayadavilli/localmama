@@ -37,21 +37,6 @@ logger = get_logger("localmama.agent")
 server = AgentServer()
 
 
-def _prewarm(proc) -> None:  # noqa: ANN001 - livekit JobProcess
-    """Runs inside every job process before it is handed a call.
-
-    This is the only place a warm-up actually helps. LiveKit executes each job
-    in its own process, so loading the embedding model in `main()` warmed the
-    parent and left every job process cold — the first lookup_services still
-    paid the load, mid-conversation, and a live call showed 13s of silence
-    while it happened.
-    """
-    from .services import brain
-
-    brain.warm()
-
-
-server.setup_fnc = _prewarm
 
 
 def _apply_language_to_stt(stt, language: Language) -> None:
