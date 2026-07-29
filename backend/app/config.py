@@ -33,9 +33,6 @@ class Settings:
     # --- storage ---
     data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR") or ROOT_DIR / "data"))
 
-    # --- local API server ---
-    host: str = field(default_factory=lambda: _env("HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: int(_env("PORT", "8000")))
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))
 
     # --- LLM backend (see services/llm_client.py) ---
@@ -75,7 +72,7 @@ class Settings:
         default_factory=lambda: _env("PROFILE_SALT", "local-mama-dev-salt")
     )
 
-    # --- provider selection (see providers/registry.py) ---
+    # --- provider selection (see providers/livekit_plugins.py) ---
     stt_provider: str = field(default_factory=lambda: _env("STT_PROVIDER", "openai"))
     tts_provider: str = field(default_factory=lambda: _env("TTS_PROVIDER", "openai"))
     #: Fixed STT language for providers that cannot switch at runtime (Sarvam).

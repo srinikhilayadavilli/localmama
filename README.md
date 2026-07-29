@@ -12,12 +12,12 @@ same conversation engine:
 
 | Path | Transport | Audio | Needs keys? |
 |---|---|---|---|
-| **Terminal console** (most reliable) | in-process | OS synthesiser (`say` / `espeak-ng`) | No |
-| **Browser console** | FastAPI WebSocket | Browser Web Speech API | No |
-| **LiveKit worker** | LiveKit WebRTC | Pluggable STT/TTS providers | Yes |
+| **Terminal console** | in-process | OS synthesiser (`say` / `espeak-ng`) | No |
+| **LiveKit worker** (production) | SIP / WebRTC | Pluggable STT/TTS providers | Yes |
 
-If the browser mic gives you trouble, skip it — `make cli` exercises the exact
-same agent with better-sounding speech and no cloud dependency.
+Callers dial a phone number; the call arrives over a SIP trunk into LiveKit and
+is answered by the worker. `make cli` exercises the same conversation engine in
+a terminal, which is the quickest way to test the workflow without a phone.
 
 ---
 
@@ -34,7 +34,7 @@ and reporting which entities it contains.
  caller audio
       │
       ▼
-┌───────────────┐   transport-specific (LiveKit WebRTC, or browser Web Speech)
+┌───────────────┐   transport-specific (LiveKit over SIP or WebRTC)
 │  STT / audio  │
 └───────┬───────┘
         │ text
@@ -246,7 +246,7 @@ greeting them is the feature. Treat `data/profiles/` exactly as carefully as
 Memory needs a stable caller identity, and the MVP has none — sessions are
 per-call UUIDs. It arrives with telephony: LiveKit SIP exposes the calling
 number, which is passed as `ConversationManager(caller_id=...)`. Until then the
-browser and terminal paths are anonymous and behave exactly as before.
+terminal path is anonymous and behaves exactly as before.
 
 ### Workflow states
 
@@ -327,20 +327,22 @@ Close to the requested structure, with two deliberate changes:
 ```
 localmama/
 ├── README.md  .env.example  Makefile  pytest.ini
+├── requirements.txt  Dockerfile  livekit.toml
+├── setup/       SIP trunk + dispatch rule (see setup/README.md)
 ├── backend/
-│   ├── requirements.txt
 │   └── app/
-│       ├── agent.py           LiveKit worker (STT + TTS voice path)
-│       ├── agent_realtime.py  speech-to-speech worker (EXPERIMENT)
+│       ├── agent.py           LiveKit worker — deterministic STT + TTS path
+│       ├── agent_realtime.py  speech-to-speech worker (currently deployed)
 │       ├── realtime_tools.py  the only route from speech to a saved lead
-│       ├── main.py            FastAPI: WebSocket loop, debug + admin API
+│       ├── telephony.py       caller id off the SIP participant
+│       ├── latency.py         `make latency` — where the caller's wait goes
 │       ├── config.py          env-driven settings
 │       ├── logger.py          console logging + state-transition helper
 │       ├── models.py          Pydantic: SessionData, Extraction, Lead
 │       ├── languages.py       Language enum, normalisation, script detection
 │       ├── state_machine.py   pure, deterministic flow control
 │       ├── security.py        input sanitisation, limits, flood control
-│       ├── cli.py             terminal console (OS speech, no browser)
+│       ├── cli.py             terminal console (OS speech)
 │       ├── session_store.py   in-memory live sessions
 │       ├── persistence.py     JSON leads + transcripts (atomic writes)
 │       ├── prompts/
@@ -348,19 +350,18 @@ localmama/
 │       │   ├── agent_instructions.py  voice persona / speaking rules
 │       │   └── voice_style.py         Indian accent steering for OpenAI STT/TTS
 │       ├── providers/
-│       │   ├── base.py                STT / TTS / LanguageDetector protocols
-│       │   ├── mock.py                key-free defaults
-│       │   ├── livekit_plugins.py     LiveKit vendor wiring
-│       │   └── registry.py            provider factory — the swap point
+│       │   └── livekit_plugins.py     LiveKit vendor wiring
 │       └── services/
 │           ├── entity_extractor.py    rule-based extraction
 │           ├── smalltalk.py           casual-chat classification (pure)
 │           ├── llm_extractor.py       Claude fallback (structured output)
+│           ├── brain.py               shared Neon knowledge base (read-only)
+│           ├── lead_store.py          durable leads in Postgres
+│           ├── metrics_store.py       per-turn call metrics
+│           ├── whatsapp.py            lead handoff via CampaignBot
 │           └── conversation_manager.py  the orchestrator
-├── frontend/    index.html · app.js · styles.css · admin.html
-├── tests/       134 Python tests + 42 headless frontend checks
-│   └── frontend/  mic state machine, diagnostics, recognition fallback
-└── data/        leads/ · transcripts/
+├── tests/       376 tests
+└── data/        leads/ · transcripts/  (ephemeral; Postgres is durable)
 ```
 
 ---
@@ -389,7 +390,7 @@ cp .env.example .env
 
 ## 3. Run it
 
-### Terminal console — no browser, no keys (recommended)
+### Terminal console — no keys needed
 
 The most reliable way to exercise the agent. It drives the same
 `ConversationManager` as everything else and speaks replies through the
@@ -405,7 +406,7 @@ make voices         # show which system voices are installed
 On macOS this uses `say`, which ships real Indian-language voices — Lekha
 (Hindi), Piya (Bengali), Geeta (Telugu), Vani (Tamil), Soumya (Kannada), and
 Rishi/Aman/Tara (Indian English). Speech quality is noticeably better than the
-browser path. On Linux it falls back to `espeak-ng` if present; without either
+worker. On Linux it falls back to `espeak-ng` if present; without either
 it runs text-only.
 
 ```bash
@@ -418,109 +419,16 @@ Try it: `make cli`, then type `Telugu`, `నా పేరు రవి`, `ఎల
 `మాధాపూర్ హైదరాబాద్` — or just `Telugu`, `naa peru Ravi`, `electrician`,
 `Madhapur Hyderabad`.
 
-### Browser console — no keys needed
-
-```bash
-make run          # → http://127.0.0.1:8000
-```
-
-Open <http://127.0.0.1:8000> and click **Connect & start call**.
-
-- **🎤 Start mic** uses the browser's own speech recognition and speech
-  synthesis. The server sends a BCP-47 locale with every turn, so the moment the
-  caller picks Telugu, both the recogniser and the voice retune to `te-IN`.
-- **Text box** drives the identical workflow with no microphone — the fastest
-  way to test, and useful when a browser lacks speech support.
-- The right panel shows the live workflow state, captured fields, and the lead
-  JSON as it is built.
-
-> Mic support: Chrome and Edge implement the Web Speech API well. Safari is
-> partial; Firefox does not support recognition. Text mode works everywhere.
-
-A **mic status line and input-level meter** sit above the transcript, and a
-**Mic diagnostics** log in the sidebar records the Web Speech lifecycle. Where
-that ladder stops tells you which layer is broken:
-
-| Diagnostics show | Meaning | Fix |
-|---|---|---|
-| `getUserMedia failed` | Permission or device problem | Padlock → Microphone → Allow; on macOS also System Settings → Privacy & Security → Microphone |
-| `audiostart`, then nothing, meter flat | Mic is open but capturing silence | Wrong input device, or OS-level mic permission |
-| `soundstart` / `speechstart`, no `result` | Capture is fine; the speech service returned nothing | Usually an unsupported language for Chrome's recogniser, or it is unreachable |
-| `result: "…"` | Working end to end | — |
-
-**Test mic** is the decisive check — it opens the microphone for 6 seconds and
-shows a true input level. If the bar does not move, the browser is receiving
-silence and no application code can help; it is an OS permission or
-input-device problem. If it moves, capture is fine and any remaining failure is
-in Chrome's speech service.
-
-Two important behaviours follow from that split:
-
-- **The level meter does not hold the microphone during a call.** Two
-  simultaneous consumers (a `getUserMedia` stream plus `SpeechRecognition`) can
-  starve the recogniser on some setups — which presents exactly as "the bar
-  moves but nothing is transcribed". During a call the meter is driven by the
-  recogniser's own `soundstart`/`speechstart` events instead.
-- **If speech is heard but yields no text, the app retries automatically** in
-  single-utterance mode, the most widely supported configuration, and says so.
-  Only if that also fails does it advise falling back to text.
-
-The app also surfaces these as plain-language messages in the transcript rather
-than leaving you guessing: after 8s of an open-but-silent mic, and after 7s of
-speech that produced no text. Both paths are covered by `make test-ui`.
-
-#### Troubleshooting the browser mic and voice
-
-**`Mic error: network`** — Chrome's `SpeechRecognition` is not local; it streams
-audio to Google's servers, so anything blocking that path surfaces as this
-error: a VPN, corporate firewall, ad-blocker, or an offline machine. The app now
-retries with backoff (1s, 2s, 4s) and after three failures tells you to switch
-to text mode rather than looping.
-
-It is also self-inflicted if recognition is restarted in a tight loop, which
-Chrome throttles. The client keeps **one continuous stream** open and restarts
-lazily with a delay, which removes that cause. If you still see it, the network
-path to Google is genuinely blocked — use the text box, or move to the LiveKit
-path, which uses your own STT vendor and does not depend on Chrome's service.
-
-**Robotic voice** — most systems default to a low-quality "compact" voice.
-`getVoices()` returns them in arbitrary order, so picking the first language
-match usually picks the worst one. The client now **ranks** voices — network
-voices ("Google हिन्दी", "… Natural") score far above compact/eSpeak ones — and
-the sidebar has a **Voice** dropdown to override the choice plus a speed slider.
-Changing the voice speaks a sample so you can compare.
-
-If the dropdown is empty or only offers a compact voice, that language has no
-good voice installed. On macOS: **System Settings → Accessibility → Spoken
-Content → System Voice → Manage Voices**, then install the enhanced/premium
-variant for Hindi, Bengali, Telugu, Tamil, or Kannada. The app shows this hint
-inline when it detects the situation.
-
-Browser TTS quality is capped by what the OS ships. For genuinely natural Indic
-speech, use the LiveKit path with a real TTS vendor (§ LiveKit voice path).
-
-Try this in the text box:
-
-```
-Telugu
-naa peru Ravi
-electrician
-Madhapur Hyderabad
-```
-
 ### Captured leads and session replay
 
-<http://127.0.0.1:8000/admin> — every saved lead, with click-through to the full
 turn-by-turn transcript with the state each turn occurred in.
 
 ### Tests
 
 ```bash
 make test         # 76 Python tests — workflow, extraction, languages
-make test-ui      # browser mic/voice state machine (needs node)
 ```
 
-`make test-ui` runs `frontend/app.js` headless against stubbed Web Speech APIs.
 It exists because the mic bugs that matter are *timing* bugs — clicking the mic
 while the agent is speaking, a `speechSynthesis` callback that never fires, a
 stale callback from a cancelled utterance — and none of them are reproducible by
@@ -703,32 +611,6 @@ make agent
 (region India South), explicit dispatch accepted, agent joined, and a connected
 caller received **276 audio frames at 48 kHz** of the synthesized greeting.
 
-#### Talking to it from a browser (no SIP needed)
-
-Start the worker, then mint a call:
-
-```bash
-make agent     # terminal 1 — the worker
-make call      # terminal 2 — dispatches the agent and prints a token
-```
-
-`make call` prints a LiveKit URL, room, and token. Open
-[agents-playground.livekit.io](https://agents-playground.livekit.io), choose
-**Manual** connection, paste all three, and allow the microphone. Mami greets
-you first; wait for her to finish, then answer.
-
-The dispatch step is why this helper exists. The worker registers under
-`LIVEKIT_AGENT_NAME`, so it only takes **explicitly dispatched** jobs — the
-Playground cannot do that itself, and a named agent simply never joins a room
-you open by hand. `make call` performs the dispatch, then hands you the token.
-
-Each `make call` sets up **one** call. For repeated ad-hoc testing on a
-dedicated project, set `LIVEKIT_AGENT_NAME=` (empty) in `.env` and the agent
-auto-joins any room you open — no dispatch, no helper. Only do that on a
-project where nothing else is running, since an unnamed agent joins *every*
-room. (Verified: the printed token yields a talking agent — 228 audio frames of
-greeting received.)
-
 #### Pipeline isolation — important
 
 The worker registers under `LIVEKIT_AGENT_NAME`, which means it only takes jobs
@@ -827,7 +709,7 @@ signature shapes.
 
 **Not verified: a real call.** No LiveKit or vendor credentials were available
 here, so no audio has flowed end to end. The conversation engine underneath is
-covered by 134 tests and is the same code the terminal and browser paths use,
+covered by the test suite and is the same code the terminal path uses,
 but expect first-contact integration work — most likely around STT language
 codes and turn-endpointing tuning.
 
@@ -895,8 +777,8 @@ Verified against `livekit-agents==1.6.7`.
 | `OPENAI_REALTIME_NOISE_REDUCTION` | `near_field` | `far_field` for a laptop mic |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | *(empty)* | LiveKit voice path |
 
-Everything is optional. With an untouched `.env.example`, the browser path runs
-fully.
+LiveKit credentials and one STT/TTS provider key are required; everything else
+has a working default.
 
 ---
 
@@ -925,18 +807,6 @@ never sent.
 
 Calls that end early are persisted too, with `conversation_status: "abandoned"`
 and whatever was captured — a half-finished lead is still a lead.
-
-### Debug API
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/config` | Languages, states, provider wiring, feature flags |
-| `GET /api/leads` | All captured leads, newest first |
-| `GET /api/leads/{id}` | Full lead JSON |
-| `GET /api/transcripts/{id}` | Session replay: turn-by-turn with states |
-| `POST /api/livekit/token` | Mint a room token for a browser caller |
-
----
 
 ## 6. Swapping STT / TTS providers
 
@@ -999,7 +869,7 @@ call the state machine, and no way to mark a call complete. An injected
 instruction is just text that fails to look like a name. It is not filtered —
 it is structurally powerless.
 
-**What is deliberately not covered.** There is no authentication on `/admin` or
+**What is deliberately not covered.** There is no authentication on
 the debug API, no TLS, no per-IP limiting, and no CSRF protection: this is a
 localhost MVP. Before exposing it to a network, add auth and put it behind a
 reverse proxy. `data/` is written unencrypted, so treat captured leads as PII.
@@ -1014,14 +884,7 @@ These are deliberate MVP scope decisions, not oversights.
    a false positive mid-call is far worse than not switching, and swapping a
    TTS voice mid-session is not supported by LiveKit. See §8 for the upgrade
    path.
-2. **The browser path uses the Web Speech API, not a production STT/TTS.**
-   Quality and language coverage depend on the user's browser and installed OS
-   voices, and Chrome's recognition requires reaching Google's servers. The
-   client mitigates both (voice ranking, a manual voice override, one
-   continuous recognition stream, backoff on network errors), but the ceiling
-   is the browser's. It exists so the workflow is testable with zero keys —
-   the LiveKit path is the production-shaped one. See the troubleshooting notes
-   in §3.
+
 3. **Service labels are canonical English inside localised sentences** — a
    Telugu confirmation says "electrician", not "ఎలక్ట్రీషియన్". English trade
    names are genuinely idiomatic in Indian code-mixed speech, so this reads
@@ -1033,7 +896,7 @@ These are deliberate MVP scope decisions, not oversights.
 5. **Sessions are in-process.** `session_store.py` is a plain dict, so live
    calls do not survive a restart or span multiple workers. Completed calls are
    safe on disk.
-6. **No authentication anywhere.** `/admin` and the debug API are wide open.
+6. **No authentication anywhere** on the operational surfaces.
    Fine for localhost, not for a shared host.
 7. **The city seed list is small (~60).** Unknown localities still work via the
    positional and postposition rules; the list only boosts confidence and
@@ -1068,7 +931,6 @@ These are deliberate MVP scope decisions, not oversights.
 - **Redis-backed sessions** so calls survive restarts and scale past one worker.
 - **Telephony ingress** — LiveKit SIP for real PSTN calls. The architecture is
   already transport-agnostic; this is a new entrypoint, not a rewrite.
-- **Auth on `/admin`** and the debug API.
 
 **Quality**
 

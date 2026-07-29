@@ -1,11 +1,7 @@
-# Local Mama — one image, three ways to run it.
+# Local Mama — the LiveKit voice worker.
 #
-#   default CMD              the LiveKit voice worker. This is what LiveKit
-#                            Cloud Agents runs, and it is the only process that
-#                            needs to be always-on.
-#   python -m backend.app.main   the API + browser console. Render sets this as
-#                            its dockerCommand, so it overrides the CMD below.
-#   python deploy/run.py     both together, for a single host with one volume.
+# AGENT_MODULE selects the entrypoint: `agent` is the deterministic
+# state-machine pipeline, `agent_realtime` the speech-to-speech one.
 
 FROM python:3.11-slim
 
@@ -19,10 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    # config.py defaults to 127.0.0.1, which inside a container answers nobody.
-    HOST=0.0.0.0 \
-    # Mounted volume. Leads and transcripts are files, so without this every
-    # deploy silently discards every lead captured since the last one.
+    # Leads are written here as JSON as well as to Postgres. The container
+    # filesystem is ephemeral, so Postgres is the durable copy — see
+    # services/lead_store.py.
     DATA_DIR=/data
 
 WORKDIR /app
@@ -33,8 +28,6 @@ COPY requirements.txt requirements.txt
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY backend/ backend/
-COPY frontend/ frontend/
-COPY deploy/ deploy/
 
 # Pull the Silero VAD / turn-detector model files into the image rather than
 # fetching them on first call, when a caller is already on the line waiting.
@@ -53,13 +46,10 @@ TextEmbedding(model_name='sentence-transformers/paraphrase-multilingual-MiniLM-L
 RUN mkdir -p /data && useradd --create-home --uid 10001 mami && chown -R mami /app /data
 USER mami
 
-EXPOSE 8000
 
-# No HEALTHCHECK on purpose. The right probe differs per command — /health on
-# :8000 for the console, worker registration for the agent — so a single baked-in
-# check is wrong for at least one of them and would report a healthy container as
-# failed. Both hosts supply their own: Render via healthCheckPath, LiveKit Cloud
-# by watching the worker register.
+# No HEALTHCHECK: LiveKit Cloud judges the worker by whether it registers,
+# which is the only signal that means anything for a process with no inbound
+# port.
 
 # Shell form on purpose: it expands AGENT_MODULE, which is how one image runs
 # either worker. `agent` is the deterministic state-machine pipeline; set

@@ -2,20 +2,17 @@ PY ?= python3.11
 VENV := .venv
 BIN := $(VENV)/bin
 
-.PHONY: help setup run cli demo voices agent agent-realtime agent-gemini call latency test test-ui clean
+.PHONY: help setup cli demo voices agent agent-realtime agent-gemini latency test clean
 
 help:
 	@echo "Local Mama — MVP"
 	@echo ""
 	@echo "  make setup   Create venv and install dependencies"
-	@echo "  make run     Start the API + browser test console (http://127.0.0.1:8000)"
 	@echo "  make cli     Talk to the agent in the terminal (no browser, speaks aloud)"
 	@echo "  make demo    Scripted runs across all six languages"
 	@echo "  make voices  List installed system voices per language"
 	@echo "  make test    Run the Python test suite"
-	@echo "  make test-ui Run the browser mic/voice state tests (needs node)"
 	@echo "  make agent   Start the LiveKit voice worker (needs LiveKit keys)"
-	@echo "  make call    Mint a Playground token to talk to the agent in a browser"
 	@echo "  make agent-realtime  OpenAI Realtime speech-to-speech worker (EXPERIMENT, no state machine)"
 	@echo "  make agent-gemini    Same worker on Gemini Live, for comparison"
 	@echo "  make latency Where the caller's wait goes, from real call metrics"
@@ -28,8 +25,6 @@ setup:
 	@test -f .env || cp .env.example .env
 	@echo "\nReady. Next:  make run"
 
-run:
-	$(BIN)/python -m backend.app.main
 
 cli:
 	$(BIN)/python -m backend.app.cli
@@ -49,8 +44,6 @@ agent-realtime:
 agent-gemini:
 	REALTIME_PROVIDER=gemini $(BIN)/python -m backend.app.agent_realtime dev
 
-call:
-	$(BIN)/python -m backend.app.devcall
 
 latency:
 	$(BIN)/python -m backend.app.latency
@@ -58,10 +51,6 @@ latency:
 test:
 	$(BIN)/python -m pytest -q
 
-test-ui:
-	node tests/frontend/mic_state.test.js
-	node tests/frontend/mic_diagnostics.test.js
-	node tests/frontend/mic_fallback.test.js
 
 clean:
 	rm -rf $(VENV) .pytest_cache
