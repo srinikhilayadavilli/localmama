@@ -43,6 +43,9 @@ class LeadRecorder:
         self.session = SessionData(session_id=str(uuid.uuid4()))
         self.caller_id = caller_id
         self.saved = False
+        #: A language change requested once but not yet confirmed by the
+        #: caller. Cleared on any successful set.
+        self.pending_language = None
 
     # -- helpers ---------------------------------------------------------
 
@@ -77,6 +80,38 @@ class LeadRecorder:
             if resolved is None:
                 logger.info("session=%s  tool set_language rejected %r", rec._short(), language)
                 return f"'{language}' is not a supported language. Ask them again."
+
+            current = rec.session.selected_language
+            if current is not None and resolved is not current:
+                # Changing language mid-call needs asking twice.
+                #
+                # A caller on a real call said "ఏది?" — Telugu for "which?" —
+                # and the model switched the whole conversation to Hindi off
+                # that one word. Background noise and a half-heard syllable do
+                # the same thing, and the caller then finds themselves in a
+                # language they did not ask for with no obvious way back.
+                #
+                # A genuine request survives being asked to confirm; a misheard
+                # one does not, because the caller says "no" and the model never
+                # calls this a second time.
+                if rec.pending_language is not resolved:
+                    rec.pending_language = resolved
+                    logger.info(
+                        "session=%s  language change %s -> %s needs confirming",
+                        rec._short(), current.value, resolved.value,
+                    )
+                    return (
+                        f"The call is already in {current.value}. Do NOT switch yet. "
+                        f"Ask the caller, in {current.value}, whether they want to "
+                        f"continue in {resolved.value}. Only if they clearly say yes, "
+                        f"call this again with {resolved.value}."
+                    )
+                logger.info(
+                    "session=%s  language change %s -> %s confirmed",
+                    rec._short(), current.value, resolved.value,
+                )
+
+            rec.pending_language = None
             rec.session.selected_language = resolved
             logger.info("session=%s  CAPTURED language=%s", rec._short(), resolved.value)
             return f"Recorded language: {resolved.value}."

@@ -192,3 +192,49 @@ async def test_save_lead_is_idempotent(isolated):
     assert "already saved" in second.lower()
     assert sent == [], "a repeat save must not send another WhatsApp message"
     assert len(list((isolated / "leads").glob("*.json"))) == 1
+
+
+# --- language is not flipped by noise ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_first_language_is_accepted_immediately():
+    t = tools(LeadRecorder())
+    reply = await t["set_language"](language="telugu")
+    assert "telugu" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_changing_language_needs_confirming_first():
+    """A real call switched to Hindi because the caller said "ఏది?" — Telugu for
+    "which?". One half-heard word must not carry the rest of the call."""
+    rec = LeadRecorder()
+    t = tools(rec)
+    await t["set_language"](language="telugu")
+
+    first = await t["set_language"](language="hindi")
+    assert rec.session.selected_language is Language.TELUGU, "must not switch yet"
+    assert "do not switch" in first.lower()
+
+    second = await t["set_language"](language="hindi")
+    assert rec.session.selected_language is Language.HINDI, "a confirmed change applies"
+
+
+@pytest.mark.asyncio
+async def test_a_different_second_guess_does_not_confirm_the_first():
+    """Two different mishearings must not add up to a confirmation."""
+    rec = LeadRecorder()
+    t = tools(rec)
+    await t["set_language"](language="telugu")
+    await t["set_language"](language="hindi")
+    await t["set_language"](language="tamil")
+    assert rec.session.selected_language is Language.TELUGU
+
+
+@pytest.mark.asyncio
+async def test_restating_the_current_language_is_harmless():
+    rec = LeadRecorder()
+    t = tools(rec)
+    await t["set_language"](language="telugu")
+    await t["set_language"](language="telugu")
+    assert rec.session.selected_language is Language.TELUGU
