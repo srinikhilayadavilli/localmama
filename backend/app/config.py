@@ -85,8 +85,18 @@ class Settings:
     #: Long enough for the closing line to finish playing — cutting the room
     #: mid-sentence is worse than a moment of silence — short enough that the
     #: caller is not left holding a live, metered line.
+    #: Tail after the closing line has finished playing, so the last audio
+    #: frames reach the caller before the room disappears. This used to be the
+    #: whole wait — a fixed 6s counted from save_lead, which fires before the
+    #: goodbye is spoken and so cut it off mid-sentence.
     hangup_grace_seconds: float = field(
-        default_factory=lambda: float(_env("HANGUP_GRACE_SECONDS", "6"))
+        default_factory=lambda: float(_env("HANGUP_GRACE_SECONDS", "1.5"))
+    )
+    #: Backstop for the case where the closing line never comes. Without it a
+    #: model that says nothing would leave the caller holding a live, metered
+    #: line indefinitely.
+    hangup_max_wait_seconds: float = field(
+        default_factory=lambda: float(_env("HANGUP_MAX_WAIT_SECONDS", "25"))
     )
 
     # --- Knowledge base / "brain" (services/brain.py) ---

@@ -374,10 +374,35 @@ async def entrypoint(ctx: JobContext) -> None:
     async def hang_up_when_finished() -> None:
         while not recorder.saved:
             await asyncio.sleep(0.5)
+
+        # Wait for the outro, rather than guessing how long it takes.
+        #
+        # A fixed delay cut the closing line off mid-sentence: save_lead fires
+        # BEFORE the model speaks its goodbye, so counting from there means
+        # racing a sentence whose length is not known — and in Telugu or Tamil
+        # the same words take longer than the English the guess was tuned on.
+        #
+        # So: wait for the goodbye to start, then wait for it to end. The
+        # deadline is a backstop for the case where it never speaks at all,
+        # which must not leave the caller on a live line forever.
+        sid = recorder.session.session_id[:8]
+        deadline = time.monotonic() + settings.hangup_max_wait_seconds
+
+        while time.monotonic() < deadline and session.agent_state != "speaking":
+            await asyncio.sleep(0.2)
+        started = session.agent_state == "speaking"
+
+        while time.monotonic() < deadline and session.agent_state == "speaking":
+            await asyncio.sleep(0.2)
+
         logger.info(
-            "session=%s  lead saved; hanging up in %.1fs",
-            recorder.session.session_id[:8], settings.hangup_grace_seconds,
+            "session=%s  outro %s; hanging up after %.1fs tail",
+            sid,
+            "finished" if started else "never started (timed out)",
+            settings.hangup_grace_seconds,
         )
+        # A short tail so the last audio frames reach the caller before the
+        # room disappears — ending on the final syllable sounds like a cut-off.
         await asyncio.sleep(settings.hangup_grace_seconds)
         try:
             await ctx.delete_room()
