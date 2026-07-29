@@ -139,7 +139,20 @@
     stopBrowserSpeech();
 
     try {
-      const { token, url } = await mintToken(newRoomName());
+      const { token, url, agent_name: agentName, dispatched } = await mintToken(newRoomName());
+
+      // A named worker joins only when dispatched. If that failed, nothing will
+      // be in the room — say so now rather than after eight seconds of silence.
+      if (agentName && !dispatched) {
+        setStatus("wait", "no agent");
+        setHint(
+          `No worker is registered as "${agentName}", so nothing was dispatched ` +
+            "to this room. Deploy or start that agent and try again."
+        );
+        show("system", `Dispatch to "${agentName}" failed — no such worker registered.`);
+        ui.call.disabled = false;
+        return;
+      }
 
       room = new Room({ adaptiveStream: true, dynacast: true });
 

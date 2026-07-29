@@ -23,7 +23,7 @@ help:
 setup:
 	$(PY) -m venv $(VENV)
 	$(BIN)/pip install --upgrade pip
-	$(BIN)/pip install -r backend/requirements.txt
+	$(BIN)/pip install -r requirements.txt
 	@test -f .env || cp .env.example .env
 	@echo "\nReady. Next:  make run"
 

@@ -1,5 +1,11 @@
-# Local Mama — API server + LiveKit voice worker in one image.
-# See deploy/run.py for why both processes share a container.
+# Local Mama — one image, three ways to run it.
+#
+#   default CMD              the LiveKit voice worker. This is what LiveKit
+#                            Cloud Agents runs, and it is the only process that
+#                            needs to be always-on.
+#   python -m backend.app.main   the API + browser console. Render sets this as
+#                            its dockerCommand, so it overrides the CMD below.
+#   python deploy/run.py     both together, for a single host with one volume.
 
 FROM python:3.11-slim
 
@@ -23,8 +29,8 @@ WORKDIR /app
 
 # Dependencies first: this layer is cached until requirements.txt changes, so
 # ordinary code deploys skip the slow install entirely.
-COPY backend/requirements.txt backend/requirements.txt
-RUN pip install --upgrade pip && pip install -r backend/requirements.txt
+COPY requirements.txt requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY backend/ backend/
 COPY frontend/ frontend/
@@ -40,9 +46,12 @@ USER mami
 
 EXPOSE 8000
 
-# Not a substitute for the platform health check — this one catches a container
-# that is up but no longer serving, e.g. after the API process wedges.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${PORT:-8000}/health" || exit 1
+# No HEALTHCHECK on purpose. The right probe differs per command — /health on
+# :8000 for the console, worker registration for the agent — so a single baked-in
+# check is wrong for at least one of them and would report a healthy container as
+# failed. Both hosts supply their own: Render via healthCheckPath, LiveKit Cloud
+# by watching the worker register.
 
-CMD ["python", "deploy/run.py"]
+# `start` is LiveKit's production mode; `dev` adds file-watching and reload,
+# which is wrong in a container.
+CMD ["python", "-m", "backend.app.agent", "start"]

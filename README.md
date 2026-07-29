@@ -381,7 +381,7 @@ Or with a specific interpreter / by hand:
 make setup PY=python3.11
 # or
 python3.11 -m venv .venv
-.venv/bin/pip install -r backend/requirements.txt
+.venv/bin/pip install -r requirements.txt
 cp .env.example .env
 ```
 

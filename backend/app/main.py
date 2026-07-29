@@ -249,7 +249,39 @@ async def livekit_token(body: dict) -> JSONResponse:
         .with_grants(api.VideoGrants(room_join=True, room=room))
         .to_jwt()
     )
-    return JSONResponse({"token": token, "url": settings.livekit_url, "room": room})
+
+    # A *named* worker only takes jobs dispatched to it by name — that is what
+    # keeps one deployment from joining another's calls. The cost is that a
+    # token alone is not enough: without this dispatch the caller joins an empty
+    # room and hears silence. An unnamed worker auto-joins and needs none of it.
+    dispatched = False
+    agent_name = settings.livekit_agent_name.strip()
+    if agent_name:
+        try:
+            lk = api.LiveKitAPI(
+                settings.livekit_url, settings.livekit_api_key, settings.livekit_api_secret
+            )
+            try:
+                await lk.agent_dispatch.create_dispatch(
+                    api.CreateAgentDispatchRequest(agent_name=agent_name, room=room)
+                )
+                dispatched = True
+            finally:
+                await lk.aclose()
+        except Exception as exc:  # noqa: BLE001 - a token is still useful
+            # Most often: no worker registered under that name. Report it rather
+            # than handing back a token that leads to a silent room.
+            logger.warning("agent dispatch for %r failed: %s", agent_name, exc)
+
+    return JSONResponse(
+        {
+            "token": token,
+            "url": settings.livekit_url,
+            "room": room,
+            "agent_name": agent_name or None,
+            "dispatched": dispatched,
+        }
+    )
 
 
 def run() -> None:
