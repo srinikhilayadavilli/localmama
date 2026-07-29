@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Mama — Captured Leads</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Local Mama</h1>
+      <span class="tag">captured leads &amp; session replay</span>
+    </div>
+    <nav>
+      <button id="refresh">Refresh</button>
+      <a href="/">← Back to test console</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Leads</h2>
+      <table class="leads">
+        <thead>
+          <tr>
+            <th>Started</th><th>Name</th><th>Service</th>
+            <th>City / area</th><th>Lang</th><th>Status</th><th>Turns</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p id="empty" class="empty hidden">
+        No leads yet. Complete a call on the test console and it will appear here.
+      </p>
+    </section>
+
+    <aside class="panel sidebar">
+      <h2>Lead JSON</h2>
+      <pre id="detail" class="json">Select a lead to inspect it.</pre>
+      <h2>Session replay</h2>
+      <div id="replay" class="transcript" style="height: 34vh; min-height: 200px;"></div>
+    </aside>
+  </main>
+
+  <script>
+    const rows = document.getElementById("rows");
+    const detail = document.getElementById("detail");
+    const replay = document.getElementById("replay");
+    const empty = document.getElementById("empty");
+
+    function fmt(ts) {
+      if (!ts) return "—";
+      return new Date(ts).toLocaleString();
+    }
+
+    async function loadLeads() {
+      const leads = await (await fetch("/api/leads")).json();
+      rows.innerHTML = "";
+      empty.classList.toggle("hidden", leads.length > 0);
+      leads.forEach((lead) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${fmt(lead.started_at)}</td>
+          <td>${lead.user_name ?? "—"}</td>
+          <td>${lead.requested_service ?? "—"}</td>
+          <td>${lead.city_or_area ?? "—"}</td>
+          <td>${lead.selected_language ?? "—"}</td>
+          <td class="status-${lead.conversation_status}">${lead.conversation_status}</td>
+          <td>${lead.turns}</td>`;
+        tr.addEventListener("click", () => select(lead.session_id));
+        rows.appendChild(tr);
+      });
+    }
+
+    async function select(sessionId) {
+      const lead = await (await fetch(`/api/leads/${sessionId}`)).json();
+      detail.textContent = JSON.stringify(lead, null, 2);
+
+      replay.innerHTML = "";
+      const res = await fetch(`/api/transcripts/${sessionId}`);
+      if (!res.ok) {
+        replay.textContent = "No transcript saved for this session.";
+        return;
+      }
+      const data = await res.json();
+      data.turns.forEach((turn) => {
+        const row = document.createElement("div");
+        row.className = `msg ${turn.role}`;
+        const who = document.createElement("span");
+        who.className = "who";
+        who.textContent = `${turn.role === "agent" ? "Mami" : "Caller"} · ${turn.state}`;
+        const body = document.createElement("p");
+        body.textContent = turn.text;
+        row.append(who, body);
+        replay.appendChild(row);
+      });
+    }
+
+    document.getElementById("refresh").addEventListener("click", loadLeads);
+    loadLeads();
+  </script>
+</body>
+</html>

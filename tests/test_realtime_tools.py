@@ -1,0 +1,163 @@
+"""Gemini talks; these tools decide what is true.
+
+The free-form path could hold a perfect conversation and save nothing — 37
+leads on disk, zero from Gemini. These tools are the only route from speech to
+a stored lead, and each one applies the same validation as the typed pipeline.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from backend.app.config import settings
+from backend.app.languages import Language
+from backend.app.realtime_tools import LeadRecorder
+
+
+@pytest.fixture(autouse=True)
+def isolated(tmp_path, monkeypatch):
+    monkeypatch.setattr(type(settings), "data_dir", property(lambda self: tmp_path),
+                        raising=False)
+    from backend.app import persistence
+    monkeypatch.setattr(persistence.settings.__class__, "data_dir",
+                        property(lambda self: tmp_path), raising=False)
+    return tmp_path
+
+
+def tools(rec: LeadRecorder) -> dict:
+    return {t.info.name: t for t in rec.build_tools()}
+
+
+def test_exactly_the_expected_tools_are_exposed():
+    assert set(tools(LeadRecorder())) == {
+        "set_language", "set_name", "set_service", "set_area", "save_lead"
+    }
+
+
+# --- save is gated --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_when_nothing_captured():
+    rec = LeadRecorder(); t = tools(rec)
+    reply = await t["save_lead"]()
+    assert "missing" in reply.lower()
+    assert rec.saved is False
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_with_one_field_outstanding():
+    rec = LeadRecorder(); t = tools(rec)
+    await t["set_language"](language="English")
+    await t["set_name"](name="Ravi")
+    await t["set_service"](service="plumber")
+    reply = await t["save_lead"]()          # no area
+    assert "area" in reply.lower()
+    assert rec.saved is False
+
+
+@pytest.mark.asyncio
+async def test_save_succeeds_once_complete():
+    rec = LeadRecorder(); t = tools(rec)
+    await t["set_language"](language="English")
+    await t["set_name"](name="Ravi")
+    await t["set_service"](service="plumber")
+    await t["set_area"](area="Pune")
+    reply = await t["save_lead"]()
+    assert "saved" in reply.lower()
+    assert rec.saved is True
+
+
+# --- values are validated, not trusted -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unsupported_language_is_rejected():
+    rec = LeadRecorder(); t = tools(rec)
+    reply = await t["set_language"](language="Klingon")
+    assert "not a supported language" in reply
+    assert rec.session.selected_language is None
+
+
+@pytest.mark.asyncio
+async def test_telugu_sentence_is_normalised_to_a_trade():
+    """The real call said 'నేను ఎలక్ట్రిషన్ కోసం వెతుకుతున్నాను'."""
+    rec = LeadRecorder(); t = tools(rec)
+    await t["set_service"](service="నేను ఎలక్ట్రిషన్ కోసం వెతుకుతున్నాను")
+    assert rec.session.requested_service == "electrician"
+
+
+@pytest.mark.asyncio
+async def test_native_script_language_and_name_are_kept():
+    rec = LeadRecorder(); t = tools(rec)
+    await t["set_language"](language="తెలుగు")
+    await t["set_name"](name="ఫణి కుమార్")
+    assert rec.session.selected_language is Language.TELUGU
+    assert rec.session.user_name == "ఫణి కుమార్"
+
+
+@pytest.mark.asyncio
+async def test_markup_is_stripped_from_a_name():
+    rec = LeadRecorder(); t = tools(rec)
+    await t["set_name"](name="Ravi<script>alert(1)</script>")
+    assert "<script>" not in (rec.session.user_name or "")
+
+
+@pytest.mark.asyncio
+async def test_empty_values_are_refused():
+    rec = LeadRecorder(); t = tools(rec)
+    assert "again" in (await t["set_name"](name="   ")).lower()
+    assert rec.session.user_name is None
+
+
+# --- the lead actually lands on disk -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_saved_lead_is_written_and_readable(isolated):
+    rec = LeadRecorder(); t = tools(rec)
+    await t["set_language"](language="తెలుగు")
+    await t["set_name"](name="ఫణి కుమార్")
+    await t["set_service"](service="నేను ఎలక్ట్రిషన్ కోసం వెతుకుతున్నాను")
+    await t["set_area"](area="రాజమండ్రి")
+    await t["save_lead"]()
+
+    files = list((isolated / "leads").glob("*.json"))
+    assert len(files) == 1
+    import json
+    lead = json.loads(files[0].read_text(encoding="utf-8"))
+    assert lead["user_name"] == "ఫణి కుమార్"
+    assert lead["requested_service"] == "electrician"
+    assert lead["city_or_area"] == "రాజమండ్రి"
+    assert lead["conversation_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_correction_overwrites_before_saving():
+    rec = LeadRecorder(); t = tools(rec)
+    await t["set_service"](service="plumber")
+    await t["set_service"](service="electrician")   # caller corrected at read-back
+    assert rec.session.requested_service == "electrician"
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_captured_nothing_writes_no_lead(isolated):
+    """A Gemini run that never got past the greeting wrote an all-null record."""
+    from backend.app.services.conversation_manager import abandon
+
+    rec = LeadRecorder()
+    abandon(rec.session)
+    assert not list((isolated / "leads").glob("*.json"))
+
+
+@pytest.mark.asyncio
+async def test_a_partial_call_still_writes_what_it_had(isolated):
+    from backend.app.services.conversation_manager import abandon
+
+    rec = LeadRecorder(); t = tools(rec)
+    await t["set_name"](name="Ravi")
+    abandon(rec.session)
+    files = list((isolated / "leads").glob("*.json"))
+    assert len(files) == 1
+    import json
+    assert json.loads(files[0].read_text())["user_name"] == "Ravi"

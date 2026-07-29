@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Mama — Voice Agent Test Console</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Local Mama</h1>
+      <span class="tag">Mami · multilingual voice agent</span>
+    </div>
+    <nav>
+      <span id="conn-badge" class="badge off">disconnected</span>
+      <a href="/admin">Captured leads →</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Left: conversation -->
+    <section class="panel conversation">
+      <div class="panel-head">
+        <h2>Conversation</h2>
+        <div class="controls">
+          <button id="btn-connect" class="primary">Connect &amp; start call</button>
+          <button id="btn-mic" disabled>🎤 Start mic</button>
+          <button id="btn-test-mic">Test mic</button>
+          <button id="btn-hangup" disabled>End call</button>
+        </div>
+      </div>
+
+      <div class="mic-bar">
+        <div id="mic-status" class="mic-status">Mic off</div>
+        <div class="meter" title="Live microphone input level">
+          <span id="mic-level"></span>
+        </div>
+      </div>
+
+      <div id="transcript" class="transcript" aria-live="polite"></div>
+
+      <form id="text-form" class="composer">
+        <input id="text-input" type="text" autocomplete="off"
+               placeholder="Fallback text mode — type a reply and press Enter"
+               disabled />
+        <button type="submit" id="btn-send" disabled>Send</button>
+      </form>
+      <p class="hint">
+        Mic uses your browser's built-in speech recognition (Chrome/Edge work best).
+        Text mode drives the identical workflow with no microphone.
+      </p>
+    </section>
+
+    <!-- Right: live agent state -->
+    <aside class="panel sidebar">
+      <h2>Workflow state</h2>
+      <ol id="state-list" class="states"></ol>
+
+      <h2>Captured fields</h2>
+      <table class="fields">
+        <tbody>
+          <tr><th>Language</th><td id="f-language">—</td></tr>
+          <tr><th>Name</th><td id="f-name">—</td></tr>
+          <tr><th>Service</th><td id="f-service">—</td></tr>
+          <tr><th>City / area</th><td id="f-location">—</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Voice</h2>
+      <select id="voice-select" class="select"></select>
+      <label class="rate-row">
+        <span>Speed</span>
+        <input id="rate" type="range" min="0.7" max="1.3" step="0.05" value="1" />
+        <output id="rate-out">1.00×</output>
+      </label>
+      <p id="voice-note" class="note hidden"></p>
+
+      <h2>Lead JSON</h2>
+      <pre id="lead-json" class="json">Not captured yet.</pre>
+
+      <h2>Mic diagnostics</h2>
+      <pre id="mic-diag" class="json small">Press Start mic to begin.</pre>
+
+      <h2>Runtime</h2>
+      <pre id="runtime" class="json small">loading…</pre>
+    </aside>
+  </main>
+
+  <div id="whatsapp-toast" class="toast hidden">
+    <strong>Simulated WhatsApp handoff</strong>
+    <span id="toast-body"></span>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

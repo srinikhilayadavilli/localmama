@@ -1,0 +1,24 @@
+# Secrets never enter the image — they arrive as platform environment
+# variables. A key baked into a layer is a key you cannot rotate away.
+.env
+.env.*
+!.env.example
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.git/
+.claude/
+
+# Captured leads and transcripts are runtime state on the mounted volume, not
+# build input. Shipping the local ones would seed production with test data.
+data/leads/
+data/transcripts/
+
+tests/
+*.md
+Makefile
+gap.py
+lat_tmp.py
+.DS_Store

@@ -1,0 +1,144 @@
+"""Accent and delivery steering for the OpenAI voice models.
+
+OpenAI ships no Indian-accented voice. `gpt-4o-mini-tts` instead takes a free-
+text `instructions` field that steers delivery — accent, rhythm, warmth, pace —
+independently of the words being spoken. That field is the only lever that
+makes `coral` or `sage` sound like someone from Hyderabad rather than someone
+from California, so it is treated here as real configuration, not decoration.
+
+The same idea applies on the way in: the transcription models take a `prompt`
+that biases decoding. Feeding it Indian names, city names, and the service
+vocabulary callers actually use is what stops "Lakshmi" becoming "Lucky" and
+"Kukatpally" becoming "cook at Bally".
+
+Both strings are per-language, and both are rebuilt when the caller switches
+language mid-call (see `agent.py`).
+"""
+
+from __future__ import annotations
+
+from ..languages import ENDONYM, Language
+
+#: Accent and delivery notes shared by every language. Written as prose because
+#: that is what the model responds to — a terse list of tags steers much less.
+_BASE_STYLE = """\
+Voice: a warm, friendly Indian woman in her late thirties — the helpful \
+neighbourhood aunty everyone in the building calls when something breaks. \
+Familiar and reassuring, never a scripted call-centre agent.
+
+Accent: native Indian. This is the single most important instruction. Use the \
+syllable-timed rhythm of Indian speech, where each syllable gets close to equal \
+weight, rather than the stress-timed rhythm of American or British English. Use \
+retroflex t and d, a clear trilled r, unaspirated p/t/k, a dental th, and full \
+unreduced vowels — do not swallow unstressed syllables into a schwa. Never drift \
+into an American, British, or generic "neutral" accent at any point in the turn.
+
+Delivery: unhurried and clear, slightly slower than a native English newsreader, \
+with a gentle rising intonation on questions. Warm and patient throughout — the \
+caller may be on a bad line, in traffic, or hesitant about what they need.
+
+Details: say money the Indian way ("five hundred rupees", "one and a half lakh"). \
+Read phone numbers digit by digit with a small pause after every group. Keep \
+Indian names and place names in their natural Indian pronunciation — Lakshmi, \
+Gachibowli, Kukatpally, Koramangala — and never anglicise them."""
+
+#: Per-language additions: the regional flavour, plus the code-switching rule
+#: that matters most on a real call in India.
+_LANGUAGE_STYLE: dict[Language, str] = {
+    Language.ENGLISH: """\
+Language: Indian English, as spoken in a metro like Hyderabad or Bangalore. \
+Educated and fluent, but unmistakably Indian — not an Indian speaker imitating \
+an American one. Sprinkle in the natural discourse habits of Indian English \
+where they fit ("only", "itself", "please tell me") without laying it on thick.""",
+    Language.HINDI: """\
+Language: Hindi, as a native speaker from north India. Everyday spoken \
+Hindustani, not literary Sanskritised Hindi. Pronounce the English words that \
+Indians normally keep in Hindi — plumber, service, area, booking, OK — with an \
+Indian accent, exactly as a Hindi speaker would, never switching to an American \
+accent for them.""",
+    Language.BENGALI: """\
+Language: Bengali, as a native speaker from Kolkata. Warm, conversational \
+Bengali with its characteristic soft intonation. Keep everyday English loanwords \
+in Indian pronunciation rather than switching accent for them.""",
+    Language.TELUGU: """\
+Language: Telugu, as a native speaker from Hyderabad. Everyday spoken Telugu, \
+the way people actually talk at home, not formal news-reader Telugu. Keep \
+everyday English loanwords — plumber, current, service, area — in Indian \
+pronunciation rather than switching accent for them.""",
+    Language.TAMIL: """\
+Language: Tamil, as a native speaker from Chennai. Everyday spoken Tamil rather \
+than formal literary Tamil. Keep everyday English loanwords in Indian \
+pronunciation rather than switching accent for them.""",
+    Language.KANNADA: """\
+Language: Kannada, as a native speaker from Bangalore. Everyday spoken Kannada \
+rather than formal literary Kannada. Keep everyday English loanwords in Indian \
+pronunciation rather than switching accent for them.""",
+}
+
+#: Vocabulary the transcription model is most likely to get wrong on this call:
+#: Indian names, Indian cities and neighbourhoods, and the service words that
+#: the workflow has to extract correctly or the lead is useless.
+_STT_VOCABULARY = (
+    "Local Mama, Mami. "
+    "Names: Lakshmi, Ramesh, Priya, Venkatesh, Anjali, Suresh, Kavitha, Arjun, "
+    "Meena, Rajesh, Fatima, Gurpreet. "
+    "Places: Hyderabad, Bengaluru, Chennai, Mumbai, Delhi, Kolkata, Pune, "
+    "Gachibowli, Kukatpally, Madhapur, Koramangala, Indiranagar, Andheri, "
+    "Salt Lake, T Nagar, Banjara Hills, Jubilee Hills. "
+    "Services: plumber, electrician, carpenter, AC service, RO service, "
+    "geyser repair, pest control, house cleaning, maid, cook, painter, "
+    "car wash, packers and movers, tuition teacher, mechanic. "
+    "Money is in rupees, lakhs and crores."
+)
+
+
+def tts_instructions(language: Language) -> str:
+    """Delivery instructions for OpenAI TTS in the caller's language."""
+    return f"{_BASE_STYLE}\n\n{_LANGUAGE_STYLE[language]}"
+
+
+def stt_prompt(language: Language) -> str:
+    """Decoding hint for OpenAI STT in the caller's language.
+
+    Mentions the language by name and endonym as well as listing vocabulary,
+    because the transcription models weight the prompt's own language as a cue
+    for which language they are about to hear.
+    """
+    return (
+        f"An Indian caller speaking {language.value.capitalize()} "
+        f"({ENDONYM[language]}) with an Indian accent, on a phone line, asking "
+        f"for a local home service. They may mix English words into the "
+        f"sentence. {_STT_VOCABULARY}"
+    )
+
+
+def realtime_accent_instructions() -> str:
+    """Accent block for a speech-to-speech model (`agent_realtime.py`).
+
+    A realtime model owns all six languages inside one session and switches
+    whenever the caller does, so every language's note goes in up front — there
+    is no per-turn `instructions` field to swap, only the system prompt. The
+    text is derived from the same per-language blocks the TTS path uses, so the
+    accent is defined in exactly one place.
+    """
+    notes = "\n".join(
+        f"- {language.value.capitalize()} ({ENDONYM[language]}): "
+        f"{_LANGUAGE_STYLE[language].removeprefix('Language: ')}"
+        for language in Language
+    )
+    return (
+        f"{_BASE_STYLE}\n\n"
+        "Languages: the caller picks one at the start of the call. Speak that "
+        "one, as a native speaker, for the rest of the call — and keep the "
+        "Indian accent above in every one of them.\n"
+        f"{notes}"
+    )
+
+
+#: Before the caller has picked a language: no language is asserted, so the
+#: model is free to auto-detect, but the vocabulary bias still applies.
+GREETING_STT_PROMPT = (
+    "An Indian caller with an Indian accent, on a phone line, speaking English, "
+    "Hindi, Bengali, Telugu, Tamil, or Kannada, and possibly mixing English "
+    f"words into the sentence. {_STT_VOCABULARY}"
+)
