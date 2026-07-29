@@ -203,41 +203,6 @@ class LeadRecorder:
             return f"Recorded city: {value}." + rec.state_line()
 
         @function_tool(
-            name="lookup_services",
-            description=(
-                "Check which Local Mama businesses match what the caller asked "
-                "for. Call this once you know the service, to reassure them we "
-                "cover it. Returns an empty list when nothing matches — say you "
-                "will have the team find someone; never invent a business name."
-            ),
-        )
-        async def lookup_services(
-            request: Annotated[str, "What the caller asked for, in their own words."],
-        ) -> str:
-            from .services import brain
-
-            if not brain.available():
-                return "The directory is unavailable. Continue without naming any business."
-            # Prefer the canonical service over the caller's raw words. The
-            # catalogue is written in English, and cross-lingual similarity
-            # scores far lower than same-language: "నాకు కారు సర్వీస్ కావాలి"
-            # ranked its best match at 0.28 while the normalised "car service"
-            # scored 0.63 against the same rows. set_service has already done
-            # that normalisation, so use it when we have it.
-            query = rec.session.requested_service or request
-            hits = await brain.retrieve_async(query, city=rec.session.city_or_area, top_k=3)
-            if not hits:
-                return (
-                    "No listed business matches that. Tell the caller the team "
-                    "will find someone and follow up — do not name any business."
-                )
-            listed = "; ".join(f"{h.title} ({h.category})" for h in hits)
-            return (
-                f"Matching businesses: {listed}. You may mention these by name. "
-                f"Do not invent details about them beyond the name and category."
-            )
-
-        @function_tool(
             name="save_lead",
             description=(
                 "Save the lead. Call this ONLY after you have read all the details "
@@ -306,7 +271,7 @@ class LeadRecorder:
             )
             return "Lead saved. Thank the caller and close the call warmly."
 
-        return [set_language, set_name, set_service, set_city, lookup_services, save_lead_tool]
+        return [set_language, set_name, set_service, set_city, save_lead_tool]
 
 
 def prefill_from_profile(rec: LeadRecorder) -> list[str]:
