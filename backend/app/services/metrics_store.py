@@ -158,6 +158,10 @@ _FOCUS = {
     "LLMMetrics": ("ttft", "LLM time to first token"),
     "TTSMetrics": ("ttfb", "time to first audio byte"),
     "STTMetrics": ("duration", "transcription duration"),
+    # Synthetic, and the only one that measures what the caller experiences:
+    # everything else times a component. Stored in the ttfb column because it
+    # is, in the end, a time to first audible byte.
+    "TurnGap": ("ttfb", "caller stops speaking -> Mami replies (what the caller feels)"),
 }
 
 

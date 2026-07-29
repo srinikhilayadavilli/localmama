@@ -284,9 +284,18 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as exc:  # noqa: BLE001 - never let measurement break a call
             logger.debug("could not record metrics: %s", exc)
 
+    # The gap the caller actually feels.
+    #
+    # Nothing else measures it on this path: the speech-to-speech model does its
+    # own turn detection and audio, so LiveKit emits no EOU or TTS metrics and
+    # the one number we do get — time to first token, ~0.3s — says only that the
+    # model started promptly, not when the caller heard anything.
+    last_user_turn: dict = {}
+
     @session.on("user_input_transcribed")
     def on_user(event) -> None:  # noqa: ANN001
         if event.is_final and event.transcript.strip():
+            last_user_turn["at"] = time.monotonic()
             logger.info("caller: %s", event.transcript)
 
     logged_items: set[str] = set()
@@ -304,6 +313,16 @@ async def entrypoint(ctx: JobContext) -> None:
         if item_id in logged_items:
             return
         logged_items.add(item_id)
+        started_at = last_user_turn.pop("at", None)
+        if started_at is not None:
+            gap = time.monotonic() - started_at
+            turn_metrics.append({
+                "kind": "TurnGap", "eou_delay": None, "transcription_delay": None,
+                "ttft": None, "ttfb": gap, "duration": None, "audio_duration": None,
+                "num_interruptions": None, "num_backchannels": None,
+                "raw": {"seconds": gap, "reply": text[:120]},
+            })
+            logger.info("turn gap %.2fs (caller finished -> Mami replied)", gap)
         logger.info("mami: %s", text)
         logger.info("  captured so far: %s", recorder.snapshot())
 
