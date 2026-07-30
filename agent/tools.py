@@ -232,6 +232,15 @@ class Recorder:
                 TranscriptTurn(role="agent", text=text.strip(), at=self._at())
             )
 
+    def caller_spoke_last(self) -> bool:
+        """Whether the caller has said anything since Mami last spoke.
+
+        The read-back is only a verification if someone answered it.
+        """
+        for turn in reversed(self.session.transcript):
+            return turn.role == "caller"
+        return False
+
     def snapshot(self) -> dict:
         return {_SPOKEN[f]: v for f, v in self.session.captured.items()}
 
@@ -395,10 +404,25 @@ class Recorder:
                     f"Ask the caller for it, then try again."
                 )
 
-            # The caller has heard the details and agreed. That is the only
-            # verification this side of the boundary can offer, and it is the
-            # one that matters — it happens while they can still correct it.
-            s.confirmed = True
+            # Whether the caller actually got to agree, rather than whether we
+            # reached this tool.
+            #
+            # This used to assert True unconditionally, on the reasoning that
+            # the flow puts save_lead after the read-back. The flow is a prompt.
+            # On a real call the model read the details back and called this
+            # two seconds later, with no caller turn in between — and the lead
+            # went out marked confirmed, having been confirmed by nobody.
+            #
+            # A caller turn after the last thing Mami said is the evidence. If
+            # the transcript for their "yes" has not landed yet this reads
+            # False, which over-flags rather than over-trusts; that is the
+            # direction to be wrong in.
+            s.confirmed = rec.caller_spoke_last()
+            if not s.confirmed:
+                logger.warning(
+                    "call=%s  saved without the caller answering the read-back",
+                    s.short(),
+                )
             s.saved = True
             logger.info("call=%s  LEAD COMPLETE: %s", s.short(), rec.snapshot())
             # Nothing is awaited. The captures are already queued, `call.ended`

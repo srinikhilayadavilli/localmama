@@ -235,6 +235,28 @@ async def process(call_id: str) -> dict | None:
         store.mark_whatsapp(call_id, False, "incomplete lead")
         return store.get_lead(call_id)
 
+    # Nothing is sent when the audit cannot vouch for the service itself.
+    #
+    # The message is *about* the service — "here are some electrician options".
+    # A caller asked for a plumber on a bad line; STT produced Telugu on a
+    # Tamil call, the model heard "electrician", and both this score and the
+    # city's came back 0.00. The lead was correctly flagged, and the message
+    # went out anyway telling them about electricians.
+    #
+    # Naming the wrong trade to a customer is worse than saying nothing. The
+    # lead is stored, flagged, and waiting for a human — which is what
+    # `needs_review` is for. Only the service gates this: a shaky name still
+    # produces a useful message, and a shaky city only widens the search.
+    service_score = confidence.get(CapturedField.SERVICE.value, {})
+    if service_score.get("evidence") and service_score.get("score", 1.0) < settings.review_threshold:
+        logger.warning(
+            "call %s: service %r scored %.2f — not messaging the caller about a "
+            "trade we cannot verify they asked for",
+            call_id[:8], english["service"], service_score.get("score", 0.0),
+        )
+        store.mark_whatsapp(call_id, False, "service unverified")
+        return store.get_lead(call_id)
+
     logger.info(
         "processed %s: %s / %s / %s — %d vendor(s)%s",
         call_id[:8], english["name"], english["service"], english["city"],

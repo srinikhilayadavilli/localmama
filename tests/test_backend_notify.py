@@ -106,3 +106,39 @@ async def test_a_call_that_captured_nothing_sends_nothing(monkeypatch, sent):
 
     await pipeline.process("c1")
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_an_unverifiable_service_is_not_messaged_about(monkeypatch, sent):
+    """The call that prompted this. The caller asked for a plumber; the line
+    was bad enough that STT produced Telugu on a Tamil call and the model heard
+    "electrician". The audit scored it 0.00 and flagged the lead — and the
+    message went out anyway, telling them about electricians.
+
+    Naming the wrong trade to a customer is worse than saying nothing."""
+    store = FakeStore(_lead(
+        raw={"language": "tamil", "name": "பணிகுமார்",
+             "service": "இலெக்ட்ரீஷியன்", "city": "சென்னை"},
+        _heard=["என்னோட பெயர் பணிகுமார்", "సరఫరా చేయనో", "பெனமெய்ல்"],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+
+    assert sent == []
+    assert store.marks == [(False, "service unverified")]
+
+
+@pytest.mark.asyncio
+async def test_a_shaky_name_still_gets_a_message(monkeypatch, sent):
+    """Only the service gates the send. A name we cannot verify still produces
+    a useful message — the caller knows who they are."""
+    store = FakeStore(_lead(
+        raw={"language": "telugu", "name": "Suresh", "service": "plumber",
+             "city": "Hyderabad"},
+        _heard=["my name is Ravi", "plumber", "Hyderabad"],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+    assert len(sent) == 1

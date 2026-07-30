@@ -25,6 +25,15 @@ from .logger import get_logger
 
 logger = get_logger("localmama.store")
 
+#: Outcomes that will never improve by trying again. Everything else stays
+#: `pending` for the outbox to sweep.
+_NOT_WORTH_RETRYING = frozenset({
+    "no phone",            # anonymous caller — nowhere to send
+    "not configured",      # WhatsApp credentials absent
+    "incomplete lead",     # no service; the message would have nothing to say
+    "service unverified",  # we cannot vouch for the trade they asked for
+})
+
 
 def record_events(events: list[Event]) -> tuple[list[str], list[str]]:
     """Store events. Returns (accepted_ids, duplicate_ids).
@@ -135,8 +144,7 @@ def mark_whatsapp(call_id: str, ok: bool, error: str = "") -> None:
     """
     status = (
         "sent" if ok
-        else ("skipped" if error in {"no phone", "not configured", "incomplete lead"}
-              else "pending")
+        else ("skipped" if error in _NOT_WORTH_RETRYING else "pending")
     )
     try:
         with db.connection() as conn:

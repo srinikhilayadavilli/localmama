@@ -104,20 +104,41 @@ async def test_save_refuses_while_a_field_is_missing(rec):
     assert rec.session.saved is False
 
 
-@pytest.mark.asyncio
-async def test_a_complete_call_saves_and_records_the_confirmation(rec):
+async def _capture_everything(rec) -> dict:
     t = tools(rec)
     await t["set_language"](language="telugu")
     await t["set_name"](name="రవి")
     await t["set_service"](service="ఏసీ రిపేర్")
     await t["set_city"](city="మాదాపూర్")
+    return t
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_call_records_that_the_caller_answered(rec):
+    """The read-back happened and the caller replied to it."""
+    t = await _capture_everything(rec)
+    rec.note_agent_speech("So that's an AC repair in Madhapur for Ravi?")
+    rec.note_caller_speech("అవును")                      # "yes"
 
     reply = await t["save_lead"]()
     assert "saved" in reply.lower()
     assert rec.session.saved is True
-    # save_lead is only reached after the read-back, so reaching it IS the
-    # caller's confirmation.
     assert rec.session.confirmed is True
+
+
+@pytest.mark.asyncio
+async def test_saving_without_the_caller_answering_is_not_a_confirmation(rec):
+    """A real call: Mami read the details back and called save_lead two seconds
+    later, with no caller turn in between. The lead went out marked confirmed,
+    having been confirmed by nobody — and the details were wrong.
+
+    Reaching this tool is not evidence. A caller turn after it is."""
+    t = await _capture_everything(rec)
+    rec.note_agent_speech("So that's an AC repair in Madhapur for Ravi?")
+
+    await t["save_lead"]()
+    assert rec.session.saved is True
+    assert rec.session.confirmed is False
 
 
 @pytest.mark.asyncio
