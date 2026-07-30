@@ -154,11 +154,151 @@ def retrieve(text: str, *, city: str | None = None, top_k: int = 3) -> list[Hit]
         return []
 
 
+def spoken_phone(phone: str | None) -> str:
+    """Digits grouped so a TTS engine reads them as a number, not a year.
+
+    "9735927627" said as one token comes out as garbage on every engine we have
+    tried; in groups it is dictatable.
+    """
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if len(digits) == 10:
+        return f"{digits[:5]} {digits[5:]}"
+    if len(digits) == 12 and digits.startswith("91"):
+        return f"+91 {digits[2:7]} {digits[7:]}"
+    return phone or ""
+
+
+def categories() -> set[str]:
+    """Every category in the knowledge base, lowercased.
+
+    Used to tell a category apart from a business name: "wash" and "tutors" are
+    things we do, "WOW Wash" is someone we can put a caller through to.
+    """
+    if not available():
+        return set()
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT lower(category) FROM utter.knowledge"
+                " WHERE owner_id = %s AND agent_id = %s AND category IS NOT NULL",
+                (settings.brain_owner_id, settings.brain_agent_id),
+            )
+            return {row[0] for row in cur.fetchall() if row[0]}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read categories: %s", exc)
+        return set()
+
+
+def looks_like_a_category(query: str) -> bool:
+    """Whether the caller named a kind of business rather than a business.
+
+    Matched as a whole word so "wash" is caught by "Car Wash" while "WOW Wash"
+    is still read as the business it is.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    for category in categories():
+        if q == category or q in category.split():
+            return True
+    return False
+
+
+def find_business(name: str, limit: int = 5) -> list[Hit]:
+    """Businesses matching a NAME, most literal first. No embeddings.
+
+    A caller asking "what is Brimmies Cafe's number?" wants an exact record.
+    Semantic search would hand back the nearest neighbour with a real phone
+    number attached and send them to a stranger — it matched "electrician" to an
+    EV charging company at 0.59, because the words look alike.
+    """
+    query = (name or "").strip()
+    if not available() or not query:
+        return []
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, title, content, category, city, phone,"
+                " coalesce(attrs,'{}'::jsonb),"
+                "  CASE WHEN lower(title) = lower(%(q)s) THEN 0"
+                "       WHEN lower(title) LIKE lower(%(q)s) || '%%' THEN 1"
+                "       WHEN lower(title) LIKE '%%' || lower(%(q)s) || '%%' THEN 2"
+                "       ELSE 3 END AS rank"
+                " FROM utter.knowledge"
+                " WHERE owner_id = %(owner)s AND agent_id = %(agent)s"
+                "   AND (lower(title) LIKE '%%' || lower(%(q)s) || '%%'"
+                "        OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')"
+                " ORDER BY rank, title LIMIT %(k)s",
+                {"q": query, "k": limit,
+                 "owner": settings.brain_owner_id, "agent": settings.brain_agent_id},
+            )
+            found = [Hit(*row) for row in cur.fetchall()]
+        logger.info("brain name lookup %r -> %s", query[:40], [h.title for h in found])
+        return found
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("name lookup failed (%s); continuing without it", exc)
+        return []
+
+
+def matches_for_service(service: str, limit: int = 3) -> list[Hit]:
+    """Businesses that actually do this work, with phone numbers.
+
+    Category matches win outright over keyword matches. Without that, "cleaning"
+    returned a dental clinic — "teeth cleaning" is a fair keyword for a dentist
+    and a terrible answer for someone who wants their house cleaned.
+
+    Finding nothing is a valid outcome: there is no electrician in the
+    catalogue, so the WhatsApp template falls back to "our team is
+    shortlisting", which is true, rather than naming a business that is wrong.
+    """
+    query = (service or "").strip()
+    if not available() or not query:
+        return []
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, title, content, category, city, phone,"
+                " coalesce(attrs,'{}'::jsonb),"
+                "  CASE WHEN lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
+                "       THEN 0 ELSE 1 END AS rank"
+                " FROM utter.knowledge"
+                " WHERE owner_id = %(owner)s AND agent_id = %(agent)s"
+                "   AND phone IS NOT NULL"
+                "   AND (lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
+                "        OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')"
+                " ORDER BY rank, title",
+                {"q": query, "owner": settings.brain_owner_id,
+                 "agent": settings.brain_agent_id},
+            )
+            rows = [Hit(*row) for row in cur.fetchall()]
+        # A category hit is strong evidence; keyword-only hits are noise beside it.
+        by_category = [h for h in rows if h.score == 0]
+        chosen = (by_category or rows)[:limit]
+        logger.info("brain service match %r -> %s", query[:40], [h.title for h in chosen])
+        return chosen
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("service match failed (%s); continuing without it", exc)
+        return []
+
+
+async def matches_for_service_async(service: str, limit: int = 3) -> list[Hit]:
+    import asyncio
+
+    return await asyncio.to_thread(matches_for_service, service, limit)
+
+
+async def find_business_async(name: str, limit: int = 5) -> list[Hit]:
+    import asyncio
+
+    return await asyncio.to_thread(find_business, name, limit)
+
+
 def options_line(hits: list[Hit]) -> str:
-    """The WhatsApp template's {{4}} line, or "" to fall back to the generic text."""
-    names = [h.title for h in hits if h.title]
-    if not names:
-        return ""
-    if len(names) == 1:
-        return names[0]
-    return ", ".join(names[:-1]) + " and " + names[-1]
+    """The WhatsApp template's {{4}}: names WITH numbers, or "" to fall back.
+
+    A name alone is a teaser — the caller cannot act on it, and the number is
+    the entire point of the message.
+    """
+    parts = [f"{h.title} {spoken_phone(h.phone)}".strip()
+             for h in hits if h.title and h.phone]
+    return " · ".join(parts)

@@ -232,23 +232,23 @@ class LeadRecorder:
         async def lookup_vendor_contact(
             business: Annotated[str, "The business name the caller asked about."],
         ) -> str:
-            from .services import directory
+            from .services import brain
 
-            if not directory.available():
+            if not brain.available():
                 return "The directory is unavailable. Say you cannot look it up right now."
 
             # A category is not a request for anyone in particular. "wash" or
             # "events" names a kind of business, so there is no number to give
             # — and reeling off the businesses that happen to match would
             # volunteer vendors the caller never asked about.
-            if await asyncio.to_thread(directory.looks_like_a_category, business):
+            if await asyncio.to_thread(brain.looks_like_a_category, business):
                 return (
                     f"{business!r} is a category, not a business. Ask the caller for "
                     f"the NAME of the business they want the number for. Do not list "
                     f"any businesses."
                 )
 
-            matches = await directory.find_async(business, limit=4)
+            matches = await brain.find_business_async(business, limit=4)
             if not matches:
                 return (
                     f"No business called {business!r} is listed. Tell the caller you "
@@ -257,7 +257,7 @@ class LeadRecorder:
 
             # An exact name is an answer; anything vaguer is a question — asked
             # without naming the candidates, for the same reason as above.
-            exact = [m for m in matches if m.name.lower() == business.strip().lower()]
+            exact = [m for m in matches if m.title.lower() == business.strip().lower()]
             if len(matches) > 1 and not exact:
                 return (
                     f"{business!r} matches more than one business. Ask the caller for "
@@ -267,12 +267,12 @@ class LeadRecorder:
             hit = exact[0] if exact else matches[0]
             if not hit.phone:
                 return (
-                    f"{hit.name} is listed but has no phone number on record. Tell "
+                    f"{hit.title} is listed but has no phone number on record. Tell "
                     f"the caller it is not available and offer to have the team follow up."
                 )
             # Grouped so it is read as a dictatable number rather than one long token.
             return (
-                f"{hit.name} ({hit.category}): {hit.spoken_phone()}. "
+                f"{hit.title} ({hit.category}): {brain.spoken_phone(hit.phone)}. "
                 f"Read the number out clearly, in digit groups, and offer to repeat it."
             )
 
@@ -342,9 +342,10 @@ class LeadRecorder:
                 )
                 options = ""
                 if s.requested_service:
-                    hits = await brain.retrieve_async(
-                        s.requested_service, city=s.city_or_area
-                    )
+                    # Literal match, not semantic: the message names businesses
+                    # and gives their numbers, and semantic search matched
+                    # "electrician" to an EV charging company.
+                    hits = await brain.matches_for_service_async(s.requested_service)
                     options = brain.options_line(hits)
                 # Awaited, not fired: the outcome is recorded so a lead that
                 # did not get through stays in the outbox and is retried later,
