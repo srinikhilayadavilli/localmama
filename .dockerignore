@@ -11,11 +11,6 @@ __pycache__/
 .git/
 .claude/
 
-# Captured leads and transcripts are runtime state on the mounted volume, not
-# build input. Shipping the local ones would seed production with test data.
-data/leads/
-data/transcripts/
-
 tests/
 *.md
 Makefile
