@@ -48,11 +48,18 @@ from .state_machine import missing_fields
 
 logger = get_logger("localmama.realtime.tools")
 
-#: How many of the caller's turns a value may be grounded in. The model does not
-#: always call the tool on the turn the answer arrived — it may greet, then
-#: record — but a name from six turns ago is not evidence for what was just
-#: said, and widening this only weakens the check.
-GROUNDING_WINDOW = 4
+#: Cap on the transcript held for the audit. A call is a few dozen turns; this
+#: is a memory backstop, not a policy.
+MAX_HEARD_TURNS = 200
+
+#: How many times the audit may send the model back to the caller before it
+#: gives up and saves anyway.
+#:
+#: The audit is evidence, not truth — it compares two imperfect decodes of a
+#: phone line. When it is wrong, this is what stops a caller being asked for
+#: their name over and over with no way out. A refusal loop is a worse failure
+#: than the one the audit exists to prevent, so it loses ties.
+MAX_AUDIT_REFUSALS = 2
 
 
 def _log_if_failed(task) -> None:  # noqa: ANN001 - asyncio.Task
@@ -83,10 +90,18 @@ class LeadRecorder:
         self.pending_language = None
         #: Strong refs to post-call work, so asyncio cannot collect it.
         self.background: set = set()
-        #: What the caller was transcribed saying, most recent last. The only
-        #: evidence there is that a value came from them rather than from the
-        #: model — fed by `agent_realtime`'s `user_input_transcribed` handler.
-        self.heard: deque[str] = deque(maxlen=GROUNDING_WINDOW)
+        #: Everything the caller was transcribed saying, most recent last. The
+        #: only evidence there is that a value came from them rather than from
+        #: the model — fed by `agent_realtime`'s `user_input_transcribed`
+        #: handler. The whole call, not a window: the audit runs at save time
+        #: and the name was said many turns earlier.
+        self.heard: deque[str] = deque(maxlen=MAX_HEARD_TURNS)
+        #: How many turns had been transcribed when each field was captured.
+        #: If that number has not moved by the time the audit runs, no evidence
+        #: about this field has arrived yet and the audit must not judge it —
+        #: see `_audit`.
+        self.captured_after: dict[str, int] = {}
+        self.audit_refusals = 0
 
     # -- helpers ---------------------------------------------------------
 
@@ -98,26 +113,67 @@ class LeadRecorder:
         if (text or "").strip():
             self.heard.append(text.strip())
 
-    def grounded(self, value: str, *, every_word: bool) -> Verdict:
-        """Whether `value` traces back to the caller's recent audio.
+    def note_capture(self, field: str) -> None:
+        """Remember how much had been transcribed when a field was captured."""
+        self.captured_after[field] = len(self.heard)
 
-        `NO_TRANSCRIPT` is not a failure and must not be treated as one: a
-        provider or model with transcription off would otherwise refuse every
-        value on the call. It is logged, because running blind is worth knowing
-        about.
+    def grounded(self, value: str, *, every_word: bool) -> Verdict:
+        """Whether `value` traces back to anything the caller was heard saying."""
+        return grounding.check(value, list(self.heard), every_word=every_word)
+
+    #: field -> (whether every word must be traceable, what to call it aloud).
+    #: A name and a city are proper nouns that exist only because the caller
+    #: uttered them. A service is a description and may fairly carry a word they
+    #: did not say — "AC repair" for "मुझे एसी ठीक करवाना है".
+    _AUDITED = {
+        "user_name": (True, "name"),
+        "city_or_area": (True, "city"),
+        "requested_service": (False, "service"),
+    }
+
+    def _audit(self) -> str | None:
+        """The one field that cannot be traced to the caller, or None.
+
+        **This runs at save, not at capture, and that placement is the whole
+        point.** The realtime model reacts to audio directly and calls a tool as
+        soon as the caller answers; the transcript comes from a separate, slower
+        pass and lands *after* that call. Judging a value the moment it arrives
+        therefore compares it against the previous turn, finds nothing, and
+        refuses every field on every call — which is exactly what shipping this
+        check inline did to live callers.
+
+        By save time the read-back has happened, so every turn has been
+        transcribed and the evidence is actually there. A field whose transcript
+        still has not arrived (`captured_after`) is left alone rather than
+        judged: absence of evidence is not evidence.
         """
-        verdict = grounding.check(value, list(self.heard), every_word=every_word)
-        if verdict is Verdict.NO_TRANSCRIPT:
+        if self.audit_refusals >= MAX_AUDIT_REFUSALS:
             logger.warning(
-                "session=%s  no caller transcript yet; accepting %r unverified",
-                self._short(), value[:40],
+                "session=%s  audit exhausted after %d refusals; saving as captured",
+                self._short(), self.audit_refusals,
             )
-        elif verdict is Verdict.NOT_HEARD:
+            return None
+
+        for field, (every_word, spoken_name) in self._AUDITED.items():
+            value = getattr(self.session, field, None)
+            if not value:
+                continue
+            if len(self.heard) <= self.captured_after.get(field, 0):
+                logger.warning(
+                    "session=%s  no transcript covering %s yet; not auditing %r",
+                    self._short(), field, value[:40],
+                )
+                continue
+            if self.grounded(value, every_word=every_word) is not Verdict.NOT_HEARD:
+                continue
+            if field == "requested_service" and self.extractor_agrees(value):
+                continue
             logger.warning(
-                "session=%s  REJECTED %r — not in what the caller said (%s)",
-                self._short(), value[:40], list(self.heard),
+                "session=%s  AUDIT FAILED for %s=%r — not in what the caller said (%s)",
+                self._short(), field, value[:40], list(self.heard)[-6:],
             )
-        return verdict
+            return spoken_name
+        return None
 
     def extractor_agrees(self, canonical: str | None) -> bool:
         """Whether the rules reach the same trade from the caller's own words.
@@ -243,19 +299,12 @@ class LeadRecorder:
             name: Annotated[str, "The caller's name, exactly as they said it."],
         ) -> str:
             spoken = (name or "").strip()
-            # Grounded before anything else, and on every word: a name is a
-            # proper noun that exists only because the caller uttered it. This
-            # is the check that was missing — a Hindi call filed a fluent,
-            # invented name because nothing here ever compared it to the audio.
-            if rec.grounded(spoken, every_word=True) is Verdict.NOT_HEARD:
-                # With the state line, like every other reply from these tools:
-                # a refusal is the moment the model is most likely to re-anchor
-                # and start re-asking for details it already holds.
-                return (
-                    "You did not hear that name in what the caller said. Do NOT "
-                    "record a name you are unsure of. Ask them, in their language, "
-                    "to say their name again."
-                ) + rec.state_line()
+            # Nothing is refused here on grounding, deliberately. The transcript
+            # this would be checked against has not arrived yet — it is produced
+            # by a separate pass that lands after this call — so checking now
+            # rejects the caller's own name on every turn. The audit runs at
+            # save, where the evidence exists. See `_audit`.
+            #
             # The same validation the typed pipeline uses: strips "मेरा नाम X है"
             # down to X, and refuses greetings, service requests and chit-chat.
             result = extract(spoken, expecting=ConversationState.ASK_NAME)
@@ -267,6 +316,7 @@ class LeadRecorder:
             if not cleaned:
                 return "That did not look like a name. Ask them again."
             rec.session.user_name = cleaned
+            rec.note_capture("user_name")
             logger.info(
                 "session=%s  CAPTURED name=%r (heard %r)", rec._short(), cleaned, spoken
             )
@@ -285,19 +335,9 @@ class LeadRecorder:
         ) -> str:
             spoken = (service or "").strip()
             # Reuse the rule extractor so a spoken phrase in any language lands
-            # on a canonical trade, and a garbled one is refused.
+            # on a canonical trade, and a garbled one is refused. Grounding is
+            # audited at save, not here — see `set_name` and `_audit`.
             result = extract(spoken, expecting=ConversationState.ASK_SERVICE)
-            # One content word is enough here, unlike a name: a caller says
-            # "मुझे एसी ठीक करवाना है" and "AC repair" is a fair reading of it,
-            # even though "repair" was never spoken.
-            if (
-                rec.grounded(spoken, every_word=False) is Verdict.NOT_HEARD
-                and not rec.extractor_agrees(result.requested_service)
-            ):
-                return (
-                    "You did not hear that in what the caller said. Do NOT record "
-                    "a service they did not ask for. Ask them again what they need."
-                ) + rec.state_line()
             # English, because the catalogue is English and matching is literal:
             # "कार वॉश" matches none of the 50 categories, "car wash" matches one.
             # The rule extractor has already done this for the trades it knows,
@@ -307,6 +347,7 @@ class LeadRecorder:
             if not value:
                 return "That did not look like a service. Ask them again."
             rec.session.requested_service = value
+            rec.note_capture("requested_service")
             logger.info(
                 "session=%s  CAPTURED service=%r (from %r, conf=%.2f)",
                 rec._short(), value, spoken, result.confidence,
@@ -330,14 +371,7 @@ class LeadRecorder:
             city: Annotated[str, "The city, or the locality if that is all they said."],
         ) -> str:
             spoken = (city or "").strip()
-            # Every word, as with a name: a place name is a proper noun too, and
-            # a city the caller never mentioned sends the lead to the wrong one.
-            if rec.grounded(spoken, every_word=True) is Verdict.NOT_HEARD:
-                return (
-                    "You did not hear that place in what the caller said. Do NOT "
-                    "record a city you are unsure of. Ask them again where they need "
-                    "the service."
-                ) + rec.state_line()
+            # Audited at save, not here — see `set_name` and `_audit`.
             result = extract(spoken, expecting=ConversationState.ASK_LOCATION)
             # Transliterated, not translated: "मोती नगर" is Moti Nagar, and a
             # translator would offer "Pearl City".
@@ -346,6 +380,7 @@ class LeadRecorder:
             if not value:
                 return "That did not look like a place. Ask them again."
             rec.session.city_or_area = value
+            rec.note_capture("city_or_area")
             logger.info(
                 "session=%s  CAPTURED city=%r (heard %r)", rec._short(), value, spoken
             )
@@ -368,15 +403,12 @@ class LeadRecorder:
             if not brain.available():
                 return "The directory is unavailable. Say you cannot look it up right now."
 
-            # Grounded loosely: the caller may have said a two-word name of which
-            # the transcript caught one. A wrong name here cannot invent a number
-            # — the lookup either finds a record or does not — and an approximate
-            # hit is read back for confirmation before any number is given.
-            if rec.grounded(business, every_word=False) is Verdict.NOT_HEARD:
-                return (
-                    "You did not hear that business name in what the caller said. "
-                    "Ask them to repeat which business they mean. Do not guess."
-                )
+            # Not grounded at all: this is answered live, so the transcript for
+            # the turn that asked has not arrived yet. There is also less to
+            # protect — the lookup cannot invent a number, it either finds a
+            # record or refuses, and an approximate hit is read back for
+            # confirmation before any number is given.
+            #
             # The catalogue is English and matching is literal, so a name still
             # in the caller's script reaches nothing.
             business = await translate.english_name(business)
@@ -447,6 +479,24 @@ class LeadRecorder:
             if rec.saved:
                 logger.info("session=%s  save_lead called again; ignoring", rec._short())
                 return "Already saved. Just close the call warmly; do not save again."
+
+            # Checked before the completeness gate, because a value that cannot
+            # be traced to the caller is worse than a missing one: it looks like
+            # a real answer to everyone downstream. The field is cleared, which
+            # puts the model back to asking for exactly that one.
+            unverified = rec._audit()
+            if unverified:
+                rec.audit_refusals += 1
+                field = next(
+                    f for f, (_, spoken) in rec._AUDITED.items() if spoken == unverified
+                )
+                setattr(rec.session, field, None)
+                rec.captured_after.pop(field, None)
+                return (
+                    f"Cannot save yet — the {unverified} on record is not what the "
+                    f"caller said. Ask them, in their language, to say their "
+                    f"{unverified} once more, record it, then try again."
+                ) + rec.state_line()
 
             outstanding = missing_fields(rec.session)
             if outstanding:
