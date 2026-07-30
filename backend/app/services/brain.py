@@ -51,6 +51,11 @@ class Hit:
     phone: str | None
     attrs: dict = field(default_factory=dict)
     score: float = 0.0
+    #: True when this was reached by spelling rather than by a literal match.
+    #: The caller is asked to confirm the name before the number is read out —
+    #: a close spelling is a guess, and the cost of a wrong one is a stranger's
+    #: phone ringing.
+    approximate: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -204,6 +209,32 @@ def looks_like_a_category(query: str) -> bool:
     return False
 
 
+#: How close a phrase has to be to a category before it is treated as that
+#: category. 0.75 keeps "jewelry store"/"jewellery stores" (0.86) and
+#: "mobile shop"/"mobile shops" (0.96) while rejecting "photographer", whose
+#: best neighbour is "professional services" at 0.46 — there is no
+#: photographer in the catalogue, and saying so is the correct answer.
+CATEGORY_CUTOFF = 0.75
+
+
+def closest_category(query: str) -> str | None:
+    """The catalogue category nearest to `query` by spelling, or None.
+
+    Only ever consulted after a literal match has failed. Whole-phrase
+    similarity rather than per-word, so "car wash" is not dragged towards
+    "car rentals" by its first word.
+    """
+    import difflib
+
+    phrase = (query or "").strip().lower()
+    if not phrase:
+        return None
+    found = difflib.get_close_matches(
+        phrase, sorted(categories()), n=1, cutoff=CATEGORY_CUTOFF
+    )
+    return found[0] if found else None
+
+
 def find_business(name: str, limit: int = 5) -> list[Hit]:
     """Businesses matching a NAME, most literal first. No embeddings.
 
@@ -233,11 +264,97 @@ def find_business(name: str, limit: int = 5) -> list[Hit]:
                  "owner": settings.brain_owner_id, "agent": settings.brain_agent_id},
             )
             found = [Hit(*row) for row in cur.fetchall()]
-        logger.info("brain name lookup %r -> %s", query[:40], [h.title for h in found])
-        return found
+        if found:
+            logger.info("brain name lookup %r -> %s", query[:40], [h.title for h in found])
+            return found
     except Exception as exc:  # noqa: BLE001
         logger.warning("name lookup failed (%s); continuing without it", exc)
         return []
+    return _approximate_business(query, limit)
+
+
+#: Names are matched tighter than categories. A category is a word the caller
+#: chose loosely; a name is a specific record, and the cost of the nearest one
+#: being wrong is a stranger's phone ringing. 0.82 keeps "Pax Jewellers" ->
+#: "Pax Jwellers" (0.96) and "Cleanmates" -> "Clean Mates" (0.95) while
+#: rejecting "Speed Autos" -> "Speed Kawasaki Kolkata".
+NAME_CUTOFF = 0.82
+
+#: Typography the catalogue contains but a caller cannot say or a transcriber
+#: produce: a curly apostrophe in "Brinda’s kitchen", a slash in "M/S B R
+#: Enterprises". Folded on BOTH sides before comparing, so neither has to be
+#: cleaned up in the data.
+#: Every form maps straight to a space in ONE pass. Mapping "’" to "'" and
+#: "'" to " " looks equivalent and is not: `str.translate` does not re-examine
+#: what it substitutes, so "Brinda’s" became "brinda's" while "Brinda's" became
+#: "brinda s" — the exact pair this exists to reconcile.
+_PUNCT = str.maketrans({
+    ch: " " for ch in "’‘'\"“”/.,-–—()&"
+})
+
+
+def normalise_name(text: str) -> str:
+    """A business name reduced to what a caller could actually say."""
+    return " ".join((text or "").lower().translate(_PUNCT).split())
+
+
+def _approximate_business(query: str, limit: int) -> list[Hit]:
+    """Nearest titles by spelling, once a literal match has failed.
+
+    Deliberately edit distance and not embeddings. The neighbourhood of a
+    spelling is a handful of near-identical strings; the neighbourhood of a
+    meaning is the whole catalogue, which is how "electrician" reached an EV
+    charging company. Hits are flagged `approximate` so the caller is asked to
+    confirm the name rather than simply read the number.
+    """
+    import difflib
+
+    wanted = normalise_name(query)
+    if not wanted:
+        return []
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT title FROM utter.knowledge"
+                " WHERE owner_id = %s AND agent_id = %s AND title IS NOT NULL",
+                (settings.brain_owner_id, settings.brain_agent_id),
+            )
+            titles = [row[0] for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read titles (%s); no approximate match", exc)
+        return []
+
+    scored = sorted(
+        (
+            (difflib.SequenceMatcher(None, wanted, normalise_name(t)).ratio(), t)
+            for t in titles
+        ),
+        key=lambda pair: (-pair[0], pair[1]),
+    )
+    near = [title for score, title in scored[:limit] if score >= NAME_CUTOFF]
+    if not near:
+        logger.info("no business close to %r (best %.2f)",
+                    query[:40], scored[0][0] if scored else 0.0)
+        return []
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, title, content, category, city, phone,"
+                " coalesce(attrs,'{}'::jsonb), 0"
+                " FROM utter.knowledge"
+                " WHERE owner_id = %s AND agent_id = %s AND title = ANY(%s)"
+                " ORDER BY title",
+                (settings.brain_owner_id, settings.brain_agent_id, near),
+            )
+            hits = [Hit(*row) for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("approximate lookup failed (%s)", exc)
+        return []
+    for hit in hits:
+        hit.approximate = True
+    logger.info("brain name lookup %r -> %s (approximate)",
+                query[:40], [h.title for h in hits])
+    return hits
 
 
 def matches_for_service(service: str, limit: int = 3) -> list[Hit]:
@@ -271,6 +388,19 @@ def matches_for_service(service: str, limit: int = 3) -> list[Hit]:
                  "agent": settings.brain_agent_id},
             )
             rows = [Hit(*row) for row in cur.fetchall()]
+        # Nothing matched literally. Before giving up, try the nearest category
+        # by spelling: translation returns American forms ("Jewelry store")
+        # where the catalogue is British ("jewellery stores"), and a caller's
+        # phrase is rarely a category verbatim ("mobile shop" vs "mobile
+        # shops"). This is deliberately the *second* attempt — a literal hit is
+        # better evidence than a close one, so it is never overridden.
+        if not rows:
+            nearest = closest_category(query)
+            if nearest:
+                logger.info("no literal match for %r; trying category %r",
+                            query[:40], nearest)
+                return matches_for_service(nearest, limit) if nearest != query else []
+            return []
         # A category hit is strong evidence; keyword-only hits are noise beside it.
         by_category = [h for h in rows if h.score == 0]
         chosen = (by_category or rows)[:limit]

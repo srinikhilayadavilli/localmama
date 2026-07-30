@@ -37,5 +37,13 @@ def _offline_by_default(monkeypatch):
     # object.__setattr__ rather than monkeypatch.
     original_dsn = settings.database_url
     object.__setattr__(settings, "database_url", "")
+    # And no translation, for the same reason and by the same mechanism: `.env`
+    # carries a real SARVAM_API_KEY, so a vendor lookup in a test would post
+    # the fixture's service phrase to Sarvam and bill for it. Blank means
+    # `translate.available()` is False and `to_english` returns its input, which
+    # is also how it degrades on a host with no Sarvam key.
+    original_sarvam = settings.sarvam_api_key
+    object.__setattr__(settings, "sarvam_api_key", "")
     yield
     object.__setattr__(settings, "database_url", original_dsn)
+    object.__setattr__(settings, "sarvam_api_key", original_sarvam)

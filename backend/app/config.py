@@ -156,6 +156,19 @@ class Settings:
         )
     )
 
+    # --- Sarvam ---
+    #: Read by the TTS plugin from the environment, and directly by
+    #: `services/translate.py`, which is on the *speech-to-speech* path too —
+    #: unlike everything else Sarvam here, it is not inert when TTS_PROVIDER is
+    #: openai. Blank disables translation, and a service phrase is then matched
+    #: in whatever language the caller used.
+    sarvam_api_key: str = field(default_factory=lambda: _env("SARVAM_API_KEY"))
+    #: Vendor matching is done in English: the catalogue's categories and
+    #: keywords are English, so a Telugu phrase can never match one literally.
+    translate_enabled: bool = field(
+        default_factory=lambda: _env_bool("TRANSLATE_ENABLED", True)
+    )
+
     # --- Sarvam (TTS_PROVIDER=sarvam) ---
     #: The Indic-native alternative. OpenAI's TTS is English-phonetic: it will
     #: read Telugu or Tamil in an English speaker's mouth no matter what the
