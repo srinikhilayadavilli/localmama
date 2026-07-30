@@ -1,9 +1,11 @@
-"""Returning-caller memory: shorter calls, and no raw identifiers on disk.
+"""Caller profiles: recorded, never replayed into a call.
 
-Two things are being asserted. First that memory actually pays for itself — a
-known caller skips the questions we already have answers to. Second that it
-does so without becoming a privacy liability: the phone number is a lookup key,
-never stored, and erasure works.
+Two things are being asserted. First that nothing a previous call learned can
+reach a live conversation — every detail on a lead has to have been said on the
+call that produced it, and a remembered name is exactly the kind of value that
+looks right and cannot be corrected. Second that recording it stays free of
+privacy liability: the phone number is a lookup key, never stored, and erasure
+works.
 """
 
 from __future__ import annotations
@@ -39,71 +41,76 @@ async def complete_call(caller_id, turns):
 FIRST_CALL = ["Telugu", "నా పేరు రవి", "electrician", "Madhapur Hyderabad", "avunu"]
 
 
-# --- the payoff ----------------------------------------------------------
+# --- nothing remembered reaches a live call ------------------------------
 
 
 @pytest.mark.asyncio
-async def test_returning_caller_skips_language_and_name():
+async def test_a_returning_caller_is_asked_everything_again():
+    """A remembered value is asserted to the caller, not offered to them.
+
+    Prefilling the name and language skipped two questions and made the agent
+    state, as fact, something the caller had not said on this call. That is
+    unrecoverable when it is wrong: the read-back names them, they say yes to a
+    detail they never gave, and the same name comes back on every later call
+    from that number.
+    """
     await complete_call(PHONE, FIRST_CALL)
 
     m = ConversationManager(caller_id=PHONE)
     result = m.start()
 
-    # Straight to the only thing we cannot know in advance.
-    assert result.state is ConversationState.ASK_SERVICE
-    assert m.session.selected_language is Language.TELUGU
-    assert m.session.user_name == "రవి"
+    assert result.state is ConversationState.LANGUAGE_SELECTION
+    assert m.session.selected_language is None
+    assert m.session.user_name is None
 
 
 @pytest.mark.asyncio
-async def test_return_call_needs_fewer_turns():
+async def test_no_field_is_prefilled_from_a_previous_call():
+    await complete_call(PHONE, FIRST_CALL)
+    m = ConversationManager(caller_id=PHONE)
+    m.start()
+    assert m.session.user_name is None
+    assert m.session.selected_language is None
+    assert m.session.requested_service is None
+    assert m.session.city_or_area is None
+
+
+@pytest.mark.asyncio
+async def test_the_opening_line_never_names_the_caller():
+    """A number shared by a household must not greet one person as another."""
+    await complete_call(PHONE, FIRST_CALL)
+    m = ConversationManager(caller_id=PHONE)
+    assert "Ravi" not in m.start().reply and "రవి" not in m.start().reply
+
+
+@pytest.mark.asyncio
+async def test_a_second_call_still_captures_its_own_details():
+    """Not remembering must cost turns, not correctness."""
     _, first = await complete_call(PHONE, FIRST_CALL)
     assert first.state is ConversationState.COMPLETED
 
-    m, second = await complete_call(PHONE, ["plumber", "Madhapur Hyderabad", "avunu"])
+    _, second = await complete_call(
+        PHONE, ["Telugu", "నా పేరు రవి", "plumber", "Madhapur Hyderabad", "avunu"]
+    )
     assert second.state is ConversationState.COMPLETED
-    assert second.lead.user_name == "రవి"
+    # Stored in English, like every captured field on both pipelines.
+    assert second.lead.user_name == "Ravi"
     assert second.lead.requested_service == "plumber"
     assert second.lead.selected_language is Language.TELUGU
 
 
-@pytest.mark.asyncio
-async def test_returning_greeting_is_in_the_remembered_language():
-    await complete_call(PHONE, FIRST_CALL)
-    m = ConversationManager(caller_id=PHONE)
-    reply = m.start().reply
-    assert "రవి" in reply                      # greeted by name
-    assert "మామా" in reply or "మామి" in reply   # and in Telugu, not English
+# --- but the profile is still written ------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_returning_caller_is_not_greeted_as_a_stranger():
-    """'Welcome back, Ravi! Nice to meet you, Ravi!' reads as amnesia."""
+async def test_a_completed_call_still_records_a_profile():
+    """Recording is kept: the profiles are worth having, and `forget()` is a
+    legal obligation that needs something to erase."""
     await complete_call(PHONE, FIRST_CALL)
-    m = ConversationManager(caller_id=PHONE)
-    reply = m.start().reply
-    assert reply.count("రవి") == 1
-
-
-# --- service and area are never assumed ----------------------------------
-
-
-@pytest.mark.asyncio
-async def test_previous_service_is_never_prefilled():
-    """The service is *why* they are calling — assuming it would be wrong."""
-    await complete_call(PHONE, FIRST_CALL)
-    m = ConversationManager(caller_id=PHONE)
-    m.start()
-    assert m.session.requested_service is None
-
-
-@pytest.mark.asyncio
-async def test_previous_area_is_never_prefilled():
-    """People move, and may want service at a different address."""
-    await complete_call(PHONE, FIRST_CALL)
-    m = ConversationManager(caller_id=PHONE)
-    m.start()
-    assert m.session.city_or_area is None
+    profile = caller_profiles.load(PHONE)
+    assert profile is not None
+    assert profile.name == "Ravi"
+    assert profile.last_service == "electrician"
 
 
 # --- isolation and first contact -----------------------------------------
@@ -205,5 +212,5 @@ async def test_partial_call_does_not_erase_a_good_profile():
     await m.handle("...")  # caller says nothing useful, then hangs up
 
     profile = caller_profiles.load(PHONE)
-    assert profile.name == "రవి"
+    assert profile.name == "Ravi"
     assert profile.preferred_language is Language.TELUGU

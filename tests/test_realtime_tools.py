@@ -89,12 +89,18 @@ async def test_telugu_sentence_is_normalised_to_a_trade():
 
 
 @pytest.mark.asyncio
-async def test_native_script_language_and_name_are_kept():
+async def test_a_native_script_name_is_stored_in_english():
+    """The language is still whatever they chose; the value is always English.
+
+    Sarvam is unavailable in tests (see conftest), so this is the offline
+    romanisation — which is the point: the guarantee cannot depend on a network
+    call succeeding.
+    """
     rec = LeadRecorder(); t = tools(rec)
     await t["set_language"](language="తెలుగు")
     await t["set_name"](name="ఫణి కుమార్")
     assert rec.session.selected_language is Language.TELUGU
-    assert rec.session.user_name == "ఫణి కుమార్"
+    assert rec.session.user_name == "Phani Kumar"
 
 
 @pytest.mark.asyncio
@@ -127,9 +133,12 @@ async def test_a_saved_lead_is_written_and_readable(isolated):
     assert len(files) == 1
     import json
     lead = json.loads(files[0].read_text(encoding="utf-8"))
-    assert lead["user_name"] == "ఫణి కుమార్"
+    # Every field English, whatever script the call was held in: this record is
+    # matched against an English catalogue, sent over WhatsApp, and read by
+    # whoever actions it.
+    assert lead["user_name"] == "Phani Kumar"
     assert lead["requested_service"] == "electrician"
-    assert lead["city_or_area"] == "రాజమండ్రి"
+    assert lead["city_or_area"] == "Rajamandri"
     assert lead["conversation_status"] == "completed"
 
 

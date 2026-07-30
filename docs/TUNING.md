@@ -139,7 +139,7 @@ Two lookups, and **both are literal — neither embeds**:
 catalogue, so the template falls back to "our team is shortlisting", which is
 true, rather than naming a business that is wrong.
 
-### The lookup is done in English
+### Every captured detail is stored in English
 
 The catalogue is English, and matching is literal, so a phrase in the caller's
 own script matches nothing at all — `'car wash' LIKE '%కార్ వాష్%'` is false,
@@ -148,17 +148,33 @@ and the caller is told we found nothing for a trade that is in the directory.
 `SERVICE_CATALOG` canonicalises the trades it lists in every language it lists,
 but it holds 18 home-services trades and **only 4 of the 50 categories are
 reachable from one** — nothing for bakeries, jewellers, hotels or mobile shops.
-So `services/translate.py` puts the phrase through Sarvam (`TRANSLATE_ENABLED`,
-`SARVAM_API_KEY`) before the match. Unlike everything else Sarvam here, this is
-**not inert on the speech-to-speech path.**
+So `services/translate.py` converts the value through Sarvam
+(`TRANSLATE_ENABLED`, `SARVAM_API_KEY`). Unlike everything else Sarvam here,
+this is **not inert on the speech-to-speech path.**
 
-- Runs in the post-call background work, off the caller's clock.
+The conversion happens **at capture, not at lookup**. It used to translate the
+service for the vendor query only, which left the lead, the WhatsApp message
+and the Postgres row holding a script that neither the matcher nor the person
+actioning the lead could read. What is stored is now what is matched.
+
+- **Names and places are transliterated; services are translated.** A
+  translator renders meaning, which is right for a trade and a disaster for a
+  proper noun: "आशा" comes back as "Hope". `english_name`/`english_place` use
+  Sarvam's `/transliterate`; `english_service` uses `/translate`.
 - Only non-Latin text is sent. Romanised input ("naaku plumber kaavali") is
-  already Latin and a round trip could only degrade it.
+  already Latin and a round trip could only degrade it, and the rule extractor
+  has usually already produced an English label for free.
 - `source_language_code=auto`, not the session language: the two disagree, and
   transcripts wander across scripts mid-call.
-- On failure it returns the caller's words, so the worst case is the old
-  behaviour. Only the lookup is translated — the lead keeps what they said.
+- **A failure never leaves a value in the caller's script.** `translit.py` is
+  an offline Indic→Latin table covering all five scripts, and it takes over
+  when Sarvam is disabled, slow (`LIVE_TIMEOUT`, 2s) or down. "राहुल" → Rahul,
+  "కార్ వాష్" → kar vash. Rougher, always Latin, never a network dependency.
+- These now run while the caller waits, which is why the timeout is short. A
+  service the rule catalogue knows costs no call at all.
+
+The caller's city is passed to `matches_for_service` as well, on the same terms
+`retrieve` uses: listings with no city stay eligible, because most have none.
 
 Then a **fuzzy pass, and only after a literal miss** (`CATEGORY_CUTOFF=0.75`):
 translation returns American spelling where the catalogue is British, so

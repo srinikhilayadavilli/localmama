@@ -284,7 +284,8 @@ def _looks_like_name(candidate: str) -> bool:
     return True
 
 
-def _format_name(candidate: str) -> str:
+def format_name(candidate: str) -> str:
+    """"rahul sharma" -> "Rahul Sharma". Non-Latin parts are left alone."""
     return " ".join(part.capitalize() if part.isascii() else part for part in candidate.split())
 
 
@@ -412,11 +413,11 @@ def extract_name(text: str, *, expecting: bool) -> tuple[str | None, float]:
                 r"\b(?:and|aur|mariyu|matrum|ebong|,)\b", candidate, maxsplit=1
             )[0].strip()
             if _looks_like_name(candidate):
-                return _format_name(candidate), 0.9
+                return format_name(candidate), 0.9
     if expecting:
         candidate = _clean_value(_strip_fillers(text))
         if _looks_like_name(candidate):
-            return _format_name(candidate), 0.6
+            return format_name(candidate), 0.6
     return None, 0.0
 
 

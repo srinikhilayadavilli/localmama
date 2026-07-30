@@ -331,3 +331,61 @@ def test_an_absent_business_is_never_approximated_into_a_real_one() -> None:
 
     source = inspect.getsource(brain._approximate_business)
     assert "NAME_CUTOFF" in source, "approximate matching must have a floor"
+
+
+@pytest.mark.asyncio
+async def test_a_business_named_in_hindi_is_looked_up_in_english(monkeypatch) -> None:
+    """The catalogue is English and `find_business` matches literally, so a name
+    still in the caller's script reaches nothing at all."""
+    from backend.app import realtime_tools
+    from backend.app.services import brain
+
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "categories", lambda: set())
+    asked: list[str] = []
+
+    async def _record(name, limit=5):
+        asked.append(name)
+        return []
+
+    monkeypatch.setattr(brain, "find_business_async", _record)
+    tools = {t.info.name: t for t in realtime_tools.LeadRecorder().build_tools()}
+    await tools["lookup_vendor_contact"](business="क्लीन मेट्स")
+
+    assert asked and asked[0].isascii(), f"looked up {asked!r} rather than English"
+
+
+@pytest.mark.asyncio
+async def test_the_lead_lookup_is_scoped_to_the_callers_city(monkeypatch, tmp_path) -> None:
+    """The city is captured, converted and stored — so it may as well narrow the
+    match. Listings without a city stay eligible; see `matches_for_service`."""
+    import asyncio
+
+    from backend.app import realtime_tools
+    from backend.app.config import settings
+    from backend.app.services import brain, whatsapp
+
+    monkeypatch.setattr(type(settings), "data_dir", property(lambda self: tmp_path),
+                        raising=False)
+    seen: dict = {}
+
+    async def _match(service, limit=3, *, city=None):
+        seen["service"], seen["city"] = service, city
+        return []
+
+    async def _send(lead, phone, options="", attempts=3):
+        return {"ok": False, "reason": "no phone"}
+
+    monkeypatch.setattr(brain, "matches_for_service_async", _match)
+    monkeypatch.setattr(whatsapp, "send", _send)
+
+    rec = realtime_tools.LeadRecorder()
+    tools = {t.info.name: t for t in rec.build_tools()}
+    await tools["set_language"](language="हिंदी")
+    await tools["set_name"](name="राहुल")
+    await tools["set_service"](service="प्लंबर")
+    await tools["set_city"](city="मुंबई")
+    await tools["save_lead"]()
+    await asyncio.gather(*rec.background, return_exceptions=True)
+
+    assert seen == {"service": "plumber", "city": "Mumbai"}

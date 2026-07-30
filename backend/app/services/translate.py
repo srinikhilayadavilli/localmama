@@ -20,24 +20,47 @@ it returns "Jewelry store" for "నగల దుకాణం" and "Mobile shop" 
 the caller of this must still match fuzzily — the catalogue says "jewellery
 stores".
 
-Runs off the caller's clock, in the post-call background work, so a slow
-translation delays nobody. Never raises: a failed translation must cost a
-vendor match, not the handoff.
+**Names and places are transliterated, not translated.** A translator renders
+meaning, which is the right answer for a trade and a disaster for a proper
+noun: "आशा" comes back as "Hope" and "नई दिल्ली" as "New Delhi" only by luck.
+Sarvam's `/transliterate` respells instead, and `english_name`/`english_place`
+use it.
+
+**Every one of these is guaranteed to return Latin text.** When Sarvam is
+disabled, slow, or down, the offline table in `translit.py` takes over rather
+than the value being handed back in Devanagari — these values are stored, sent
+over WhatsApp, and matched against an English catalogue, so a script nobody
+downstream reads is not an acceptable degradation.
+
+Called from the tools while the caller waits, so the timeout is short and every
+path has an offline answer. Never raises: a failed conversion must cost
+spelling quality, not the call.
 """
 
 from __future__ import annotations
 
 from ..config import settings
 from ..logger import get_logger
+from . import translit
 
 logger = get_logger("localmama.translate")
 
 TRANSLATE_URL = "https://api.sarvam.ai/translate"
+#: A name is not translated, it is respelled. Sarvam has a separate endpoint for
+#: that, and the difference is not academic: put "आशा" through the translator and
+#: it comes back "Hope", which is a real word, a wrong name, and completely
+#: undetectable downstream.
+TRANSLITERATE_URL = "https://api.sarvam.ai/transliterate"
 #: mayura handles short noun phrases; sarvam-translate:v1 is tuned for prose.
 MODEL = "mayura:v1"
 #: Sarvam's cap for mayura is 1000; a service phrase is a handful of words, and
 #: anything longer is a transcription accident rather than a trade.
 MAX_INPUT = 200
+#: These now run while the caller waits, not in the post-call work, so the
+#: timeout is a live-call one. Sarvam answers a short phrase in ~0.3s; past two
+#: seconds the offline table is the better answer, because dead air costs more
+#: than a slightly rougher spelling.
+LIVE_TIMEOUT = 2.0
 
 
 def available() -> bool:
@@ -55,51 +78,136 @@ def needs_translation(text: str) -> bool:
     return any(ord(ch) > 0x24F for ch in text or "")
 
 
-async def to_english(text: str) -> str:
-    """`text` in English, or `text` unchanged if it cannot be translated.
+async def _post(url: str, payload: dict, timeout: float) -> dict:
+    """One Sarvam call. Returns {} for every failure — never raises."""
+    import httpx
 
-    Returning the input on failure is what keeps this safe to put in front of
-    the vendor match: the worst case is the behaviour we already had.
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                url,
+                headers={"api-subscription-key": settings.sarvam_api_key},
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as exc:  # noqa: BLE001 - a conversion must never end a call
+        logger.warning("sarvam %s failed (%s)", url.rsplit("/", 1)[-1], exc)
+        return {}
+
+
+async def to_english(text: str, *, timeout: float = LIVE_TIMEOUT) -> str:
+    """`text` translated to English, or `text` unchanged if it cannot be.
+
+    Meaning, not spelling — for a trade or a service phrase. Use
+    `english_name`/`english_place` for a proper noun.
     """
     phrase = (text or "").strip()
     if not phrase or not needs_translation(phrase):
         return phrase
     if not available():
-        logger.info("translation unavailable; matching %r as-is", phrase[:40])
+        logger.info("translation unavailable; using %r as-is", phrase[:40])
         return phrase
     if len(phrase) > MAX_INPUT:
         phrase = phrase[:MAX_INPUT]
 
-    import httpx
-
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(
-                TRANSLATE_URL,
-                headers={"api-subscription-key": settings.sarvam_api_key},
-                json={
-                    "input": phrase,
-                    # Detected rather than taken from the session language: the
-                    # two disagree in practice. A caller who picked Telugu says
-                    # a business name in English, and transcripts wander across
-                    # scripts mid-call.
-                    "source_language_code": "auto",
-                    "target_language_code": "en-IN",
-                    "model": MODEL,
-                },
-            )
-            response.raise_for_status()
-            body = response.json()
-    except Exception as exc:  # noqa: BLE001 - a lookup must never end a handoff
-        logger.warning("translation failed (%s); matching %r as-is", exc, phrase[:40])
-        return text
-
+    body = await _post(
+        TRANSLATE_URL,
+        {
+            "input": phrase,
+            # Detected rather than taken from the session language: the two
+            # disagree in practice. A caller who picked Telugu says a business
+            # name in English, and transcripts wander across scripts mid-call.
+            "source_language_code": "auto",
+            "target_language_code": "en-IN",
+            "model": MODEL,
+        },
+        timeout,
+    )
     english = (body.get("translated_text") or "").strip()
     if not english:
-        logger.warning("translation returned nothing for %r", phrase[:40])
         return text
     logger.info(
         "translated %r -> %r (detected %s)",
         phrase[:40], english[:40], body.get("source_language_code"),
     )
     return english
+
+
+async def transliterate(text: str, *, timeout: float = LIVE_TIMEOUT) -> str:
+    """`text` respelled in Latin letters, or `text` unchanged if it cannot be.
+
+    Sarvam's romanisation of Indian names beats the offline table — it knows
+    "ऋषभ" is Rishabh — so it is tried first and `english_name` falls back.
+    """
+    phrase = (text or "").strip()
+    if not phrase or not needs_translation(phrase):
+        return phrase
+    if not available():
+        return phrase
+    if len(phrase) > MAX_INPUT:
+        phrase = phrase[:MAX_INPUT]
+
+    body = await _post(
+        TRANSLITERATE_URL,
+        {
+            "input": phrase,
+            "source_language_code": "auto",
+            "target_language_code": "en-IN",
+            # A phone number or a house number said mid-phrase stays digits.
+            "numerals_format": "international",
+        },
+        timeout,
+    )
+    latin = (body.get("transliterated_text") or "").strip()
+    if not latin:
+        return phrase
+    logger.info("transliterated %r -> %r", phrase[:40], latin[:40])
+    return latin
+
+
+def _latin(text: str, fallback_source: str) -> str:
+    """`text` if it is already Latin, else the offline romanisation.
+
+    The last line of the guarantee: whatever Sarvam did or did not do, what
+    comes out of this module is readable by every system downstream.
+    """
+    if not needs_translation(text):
+        return text
+    romanised = translit.romanise(fallback_source)
+    logger.info("falling back to offline romanisation: %r -> %r",
+                fallback_source[:40], romanised[:40])
+    return romanised
+
+
+async def english_name(text: str) -> str:
+    """A caller's name in Latin letters. Respelled, never translated."""
+    spoken = (text or "").strip()
+    if not spoken or not needs_translation(spoken):
+        return spoken
+    return _latin(await transliterate(spoken), spoken)
+
+
+async def english_place(text: str) -> str:
+    """A city or locality in Latin letters.
+
+    Transliterated for the same reason a name is: a place name is a proper noun,
+    and "मोती नगर" is Moti Nagar, not "Pearl City".
+    """
+    spoken = (text or "").strip()
+    if not spoken or not needs_translation(spoken):
+        return spoken
+    return _latin(await transliterate(spoken), spoken)
+
+
+async def english_service(text: str) -> str:
+    """A service phrase in English — translated, because it is a description.
+
+    Falls back to romanising rather than to the caller's script: a lead that
+    reads "kar vosh" is still a lead a human can action, and it is still
+    something the fuzzy category pass can work with.
+    """
+    spoken = (text or "").strip()
+    if not spoken or not needs_translation(spoken):
+        return spoken
+    return _latin(await to_english(spoken), spoken)

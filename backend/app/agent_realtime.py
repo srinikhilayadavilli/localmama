@@ -45,7 +45,7 @@ from . import telephony
 from .config import settings
 from .logger import get_logger, setup_logging
 from .prompts.voice_style import GREETING_STT_PROMPT, realtime_accent_instructions
-from .realtime_tools import LeadRecorder, prefill_from_profile
+from .realtime_tools import LeadRecorder
 from .services import metrics_store
 from .services.conversation_manager import abandon
 
@@ -75,10 +75,12 @@ out their answer, tell them the options are English, Hindi, Bengali, Telugu, \
 Tamil and Kannada.
 2. When they answer, call set_language, then speak ONLY that language for the \
 rest of the call.
-3. Ask their name. When they answer, call set_name.
+3. Ask their name. When they answer, call set_name with exactly what they said, \
+in their own words and script — do not translate, romanise or tidy it.
 4. Ask what service they need. When they answer, call set_service with their \
 own words — do not translate it yourself.
-5. Ask which city they are in. When they answer, call set_city.
+5. Ask which city they are in. When they answer, call set_city with their own \
+words.
 6. Read the details back and ask if they are correct. Say the details ONCE: do \
 NOT address them by name first and then repeat their name among the details — \
 "Ravi garu, a plumber in Madhapur for Ravi" is how it comes out and it sounds \
@@ -100,7 +102,17 @@ under STILL NEEDED.
 name, the service and city they already gave still stand — do not re-collect \
 them.
 - Never invent a name, service, city, price, or phone number. Only use what the \
-caller actually said.
+caller actually said ON THIS CALL. You have no record of them from before, and \
+there is nothing to remember — ask for every detail.
+- A name, city or business you did not clearly hear is not a detail you have. \
+Never fill one in with a plausible guess: an Indian name that "sounds about \
+right" is a wrong name, and it goes on the lead and into their WhatsApp. If the \
+line was unclear, say you did not catch it and ask them to repeat it.
+- The tools check what you pass against what the caller actually said, and will \
+refuse a value they did not say. If a tool refuses, do not try a different \
+spelling or a similar-sounding word — ask the caller to say it again.
+- The details are stored in English. That is done for you: always pass the \
+caller's own words, in their own script, and never translate for a tool.
 - Do NOT volunteer businesses or providers to the caller, and do not say how \
 many are available. Local Mama decides who to send after the call.
 - BUT if the caller ASKS for a business's phone number or how to contact \
@@ -268,11 +280,10 @@ async def entrypoint(ctx: JobContext) -> None:
     participant = await ctx.wait_for_participant()
     phone = telephony.caller_id(participant)
     recorder = LeadRecorder(caller_id=phone or None)
-    prefilled = prefill_from_profile(recorder)
-    if prefilled:
-        logger.info("session=%s  returning caller, prefilled %s",
-                    recorder.session.session_id[:8], ", ".join(prefilled))
-
+    # Nothing is prefilled from a previous call. A remembered name saves a turn
+    # and costs correctness: it is asserted to the model as fact, so the call
+    # never asks, the read-back names someone the caller has not mentioned, and
+    # one bad capture is repeated on every future call from that number.
     logger.info("session room=%s  provider=%s", ctx.room.name, settings.realtime_provider)
     model = build_realtime_model()
     if model is None:
@@ -308,6 +319,11 @@ async def entrypoint(ctx: JobContext) -> None:
         if event.is_final and event.transcript.strip():
             last_user_turn["at"] = time.monotonic()
             logger.info("caller: %s", event.transcript)
+            # This transcript is no longer only for the logs. It is a second,
+            # independent decode of the same audio, and it is the only evidence
+            # the tools have that a value came from the caller rather than from
+            # the model — see `services/grounding.py`.
+            recorder.note_caller_speech(event.transcript)
 
     logged_items: set[str] = set()
 

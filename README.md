@@ -196,37 +196,39 @@ Off by default. Turn it on with `NATURAL_REPLIES=true` and an
 > themselves on, which turns the suite into a live-API run (0.35 s → minutes).
 > `tests/conftest.py` forces both off; tests that need them opt in explicitly.
 
-### Returning-caller memory
+### Caller profiles: recorded, never replayed
 
-Local services are a repeat business: whoever needed a plumber in March needs
-an electrician in June. Recognising them turns a five-turn call into a
-two-turn one — measured, on a real call:
+This began as returning-caller memory. Local services are repeat business, so
+prefilling the remembered name and language turned a four-turn call into a
+two-turn one — `next_state()` already skips any state whose field is filled, so
+"remembering" a caller was just prefilling `SessionData` before the call
+started.
 
-```
-FIRST CALL   Welcome to Local Mama! Which Indian language…
-             Telugu → నా పేరు రవి → electrician → Madhapur Hyderabad   (4 turns)
+**It is switched off, and the two turns are the price.** A prefilled value is
+not offered to the caller, it is *asserted* to them: the agent never asks, and
+the read-back states a name they did not give on this call. That is
+unrecoverable when it is wrong. A name captured badly once came back on every
+later call from that number with no turn in which to correct it, anyone behind
+a shared handset or a PBX that presents one number was greeted as somebody
+else, and on the speech-to-speech path the prefilled name went straight into
+the tools' `HELD` line — whose entire purpose is to tell the model to stop
+asking.
 
-RETURN CALL  లోకల్ మామాకు మళ్ళీ స్వాగతం, రవి! ఈరోజు మీకు ఏ సేవ కావాలి?
-             plumber → Madhapur Hyderabad                              (2 turns)
-```
+So nothing on either conversation path reads a profile. `remember()` still
+writes one after a call, because the profiles are worth having and `forget()`
+needs something to erase.
 
-**This needed no change to the state machine.** `next_state()` already skips
-any state whose field is filled, so "remembering" a caller is just prefilling
-`SessionData` before the call starts. Memory is data, not control flow.
-
-What is remembered, and what deliberately is not:
-
-| Field | Remembered? | Why |
+| Field | Recorded | Prefilled into a call |
 |---|---|---|
-| preferred language | **yes** | Stable, unambiguous, saves a whole turn |
-| name | **yes** | Being greeted by name is the point |
-| service | **no** | Changes every call — it is *why* they are ringing |
-| area | recorded, never prefilled | People move, and may want service elsewhere |
+| preferred language | yes | **no** |
+| name | yes | **no** |
+| service | yes | **no** |
+| area | yes | **no** |
 
 Note the distinction from "episodic memory" in the LLM sense. Past transcripts
 are **not** replayed into a prompt — that would reintroduce nondeterminism and
 hand an attacker a persistent injection surface. What persists is a small,
-typed, structured profile.
+typed, structured profile that no live call consults.
 
 #### Privacy
 
@@ -241,16 +243,45 @@ the filename nor the file body.
 - Profiles unused for `PROFILE_RETENTION_DAYS` (180) are deleted on read.
 - `CALLER_MEMORY=false` disables the whole feature.
 
-The caller's *name* is still personal data and is stored in clear, because
-greeting them is the feature. Treat `data/profiles/` exactly as carefully as
-`data/leads/`.
+The caller's *name* is still personal data and is stored in clear. Treat
+`data/profiles/` exactly as carefully as `data/leads/`.
+
+### Nothing reaches a lead that the caller did not say
+
+A Hindi call came back with a name nobody had spoken. On the speech-to-speech
+path the model *is* the transcriber, and `set_name` took whatever string it
+passed — and a realtime model on a bad line does not fail loudly, it produces a
+fluent, plausible Indian name.
+
+`services/grounding.py` checks every value a tool is handed against the
+transcript of the caller's own audio (`user_input_transcribed`). That
+transcript comes from a **different model** than the one hearing the call,
+which is what makes it evidence: two independent decodes agree on a name that
+was said and disagree on one that was invented.
+
+- **Script-blind.** The model hands over "Rahul" while the transcript reads
+  "राहुल"; both sides are romanised before anything is compared.
+- **Sound-keyed, not spelled.** Two decoders spell Indian names differently —
+  "lakshmi"/"laxmi" is 0.67 by spelling and 1.00 by sound key, while
+  "suresh"/"rahul" stays at 0.18. Loanwords come back vowel-shifted from Indic
+  script ("प्लंबर" → "plambar"), so words of four letters or more also match on
+  their consonant pattern.
+- **Names and cities need every word; a service needs one.** A caller says
+  "मुझे एसी ठीक करवाना है" and "AC repair" is a fair reading, even though
+  "repair" was never spoken — and if no word matches, the rule extractor gets a
+  second chance to reach the same trade from the transcript independently.
+- **No transcript is not a rejection.** A provider with transcription off runs
+  as before rather than refusing every value, with a warning in the logs.
+
+A refused value returns the `HELD`/`STILL NEEDED` line like every other tool
+reply, so a rejection makes the model re-ask one thing rather than lose track
+of the rest.
 
 #### The prerequisite
 
-Memory needs a stable caller identity, and the MVP has none — sessions are
-per-call UUIDs. It arrives with telephony: LiveKit SIP exposes the calling
-number, which is passed as `ConversationManager(caller_id=...)`. Until then the
-terminal path is anonymous and behaves exactly as before.
+Profiles need a stable caller identity, and the browser path has none —
+sessions are per-call UUIDs. It arrives with telephony: LiveKit SIP exposes the
+calling number, which is passed as `ConversationManager(caller_id=...)`.
 
 ### Workflow states
 

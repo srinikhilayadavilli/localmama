@@ -1,26 +1,37 @@
-"""The bridge between Gemini Live and the deterministic engine.
+"""The bridge between a realtime model and the deterministic engine.
 
-Gemini does the talking. It does **not** get to decide what was said. The only
-way a fact reaches a lead is through one of these tools, and every one of them
-runs the value through the same validation the typed pipeline uses:
+The model does the talking. It does **not** get to decide what was said. The
+only way a fact reaches a lead is through one of these tools, and every one of
+them runs the value through the same four gates:
 
-  * `sanitize_field` — strips control characters and markup, caps length.
+  * `grounding` — the value must be traceable to what the caller was
+    transcribed saying. A realtime model that mishears does not fail loudly; it
+    produces a fluent, plausible name, and this is what catches it.
   * `entity_extractor` — normalises a spoken phrase to a canonical value, so
     "నేను ఎలక్ట్రిషన్ కోసం వెతుకుతున్నాను" is stored as `electrician`, not as a
     whole sentence, and a misheard trade is rescued or rejected.
-  * `state_machine.missing_fields` — `save_lead` refuses while anything is
-    outstanding, so the model cannot declare a call finished early.
+  * `translate` — the value is stored in **English**, whatever language it was
+    spoken in. Names and places are transliterated, services translated.
+  * `sanitize_field` — strips control characters and markup, caps length.
 
-What this recovers from the free-form path: leads actually persist, values are
-normalised and sanitised, and completion is gated. What it still does not
-recover: the *order* of questions, and the guarantee that a read-back happened.
-Gemini is asked to do both, and asking is weaker than enforcing — see README.
+and `state_machine.missing_fields` gates `save_lead` while anything is
+outstanding, so the model cannot declare a call finished early.
+
+Nothing is prefilled from a previous call. `caller_profiles` still records what
+a call learned, but this path never reads it back into a session: a name the
+caller has not said on *this* call is not a fact, and a remembered one both
+skips the question and survives being wrong forever.
+
+What this still does not recover from the free-form path: the *order* of
+questions, and the guarantee that a read-back happened. The model is asked to
+do both, and asking is weaker than enforcing — see README.
 """
 
 from __future__ import annotations
 
 import asyncio
 
+from collections import deque
 from typing import Annotated
 
 from livekit.agents import function_tool
@@ -30,10 +41,18 @@ from .logger import get_logger
 from .models import ConversationState, ConversationStatus, SessionData, utcnow
 from .persistence import save_lead, save_transcript
 from .security import sanitize_field
-from .services.entity_extractor import extract
+from .services import grounding, translate
+from .services.entity_extractor import extract, format_name
+from .services.grounding import Verdict
 from .state_machine import missing_fields
 
 logger = get_logger("localmama.realtime.tools")
+
+#: How many of the caller's turns a value may be grounded in. The model does not
+#: always call the tool on the turn the answer arrived — it may greet, then
+#: record — but a name from six turns ago is not evidence for what was just
+#: said, and widening this only weakens the check.
+GROUNDING_WINDOW = 4
 
 
 def _log_if_failed(task) -> None:  # noqa: ANN001 - asyncio.Task
@@ -64,11 +83,62 @@ class LeadRecorder:
         self.pending_language = None
         #: Strong refs to post-call work, so asyncio cannot collect it.
         self.background: set = set()
+        #: What the caller was transcribed saying, most recent last. The only
+        #: evidence there is that a value came from them rather than from the
+        #: model — fed by `agent_realtime`'s `user_input_transcribed` handler.
+        self.heard: deque[str] = deque(maxlen=GROUNDING_WINDOW)
 
     # -- helpers ---------------------------------------------------------
 
     def _short(self) -> str:
         return self.session.session_id[:8]
+
+    def note_caller_speech(self, text: str) -> None:
+        """Record one final transcript of the caller's own audio."""
+        if (text or "").strip():
+            self.heard.append(text.strip())
+
+    def grounded(self, value: str, *, every_word: bool) -> Verdict:
+        """Whether `value` traces back to the caller's recent audio.
+
+        `NO_TRANSCRIPT` is not a failure and must not be treated as one: a
+        provider or model with transcription off would otherwise refuse every
+        value on the call. It is logged, because running blind is worth knowing
+        about.
+        """
+        verdict = grounding.check(value, list(self.heard), every_word=every_word)
+        if verdict is Verdict.NO_TRANSCRIPT:
+            logger.warning(
+                "session=%s  no caller transcript yet; accepting %r unverified",
+                self._short(), value[:40],
+            )
+        elif verdict is Verdict.NOT_HEARD:
+            logger.warning(
+                "session=%s  REJECTED %r — not in what the caller said (%s)",
+                self._short(), value[:40], list(self.heard),
+            )
+        return verdict
+
+    def extractor_agrees(self, canonical: str | None) -> bool:
+        """Whether the rules reach the same trade from the caller's own words.
+
+        The second chance a service gets and a name does not. "AC repair" shares
+        no word with "मुझे एसी ठीक करवाना है" — grounding sees a value the caller
+        never said — but the catalogue maps "एसी" to `ac repair` straight off the
+        transcript, and two independent routes to the same trade is exactly the
+        corroboration being asked for.
+        """
+        if not canonical:
+            return False
+        for turn in self.heard:
+            found = extract(turn, expecting=ConversationState.ASK_SERVICE)
+            if found.requested_service == canonical:
+                logger.info(
+                    "session=%s  %r corroborated by the rules from %r",
+                    self._short(), canonical, turn[:40],
+                )
+                return True
+        return False
 
     def snapshot(self) -> dict:
         s = self.session
@@ -162,38 +232,84 @@ class LeadRecorder:
 
         @function_tool(
             name="set_name",
-            description="Record the caller's name, exactly as they said it.",
+            description=(
+                "Record the caller's name, in the caller's OWN WORDS and script, "
+                "exactly as they said it. Do not translate, romanise or correct "
+                "it — that is done for you. Only call this after the caller has "
+                "actually said their name."
+            ),
         )
         async def set_name(
-            name: Annotated[str, "The caller's name."],
+            name: Annotated[str, "The caller's name, exactly as they said it."],
         ) -> str:
-            cleaned = sanitize_field(name)
+            spoken = (name or "").strip()
+            # Grounded before anything else, and on every word: a name is a
+            # proper noun that exists only because the caller uttered it. This
+            # is the check that was missing — a Hindi call filed a fluent,
+            # invented name because nothing here ever compared it to the audio.
+            if rec.grounded(spoken, every_word=True) is Verdict.NOT_HEARD:
+                # With the state line, like every other reply from these tools:
+                # a refusal is the moment the model is most likely to re-anchor
+                # and start re-asking for details it already holds.
+                return (
+                    "You did not hear that name in what the caller said. Do NOT "
+                    "record a name you are unsure of. Ask them, in their language, "
+                    "to say their name again."
+                ) + rec.state_line()
+            # The same validation the typed pipeline uses: strips "मेरा नाम X है"
+            # down to X, and refuses greetings, service requests and chit-chat.
+            result = extract(spoken, expecting=ConversationState.ASK_NAME)
+            if not result.name:
+                return "That did not look like a name. Ask them again."
+            # Stored in English, like every other field. Transliterated rather
+            # than translated — a translator turns "आशा" into "Hope".
+            cleaned = sanitize_field(format_name(await translate.english_name(result.name)))
             if not cleaned:
                 return "That did not look like a name. Ask them again."
             rec.session.user_name = cleaned
-            logger.info("session=%s  CAPTURED name=%r", rec._short(), cleaned)
+            logger.info(
+                "session=%s  CAPTURED name=%r (heard %r)", rec._short(), cleaned, spoken
+            )
             return f"Recorded name: {cleaned}." + rec.state_line()
 
         @function_tool(
             name="set_service",
             description=(
-                "Record the service the caller needs, in their own words. "
-                "It will be normalised — do not translate it yourself."
+                "Record the service the caller needs, in their own words and "
+                "script. It will be normalised and translated — do not translate "
+                "it yourself. Only call this after they have said what they need."
             ),
         )
         async def set_service(
             service: Annotated[str, "The service the caller asked for."],
         ) -> str:
+            spoken = (service or "").strip()
             # Reuse the rule extractor so a spoken phrase in any language lands
             # on a canonical trade, and a garbled one is refused.
-            result = extract(service, expecting=ConversationState.ASK_SERVICE)
-            value = sanitize_field(result.requested_service or service)
+            result = extract(spoken, expecting=ConversationState.ASK_SERVICE)
+            # One content word is enough here, unlike a name: a caller says
+            # "मुझे एसी ठीक करवाना है" and "AC repair" is a fair reading of it,
+            # even though "repair" was never spoken.
+            if (
+                rec.grounded(spoken, every_word=False) is Verdict.NOT_HEARD
+                and not rec.extractor_agrees(result.requested_service)
+            ):
+                return (
+                    "You did not hear that in what the caller said. Do NOT record "
+                    "a service they did not ask for. Ask them again what they need."
+                ) + rec.state_line()
+            # English, because the catalogue is English and matching is literal:
+            # "कार वॉश" matches none of the 50 categories, "car wash" matches one.
+            # The rule extractor has already done this for the trades it knows,
+            # in which case this is free — nothing non-Latin is left to send.
+            english = await translate.english_service(result.requested_service or spoken)
+            value = sanitize_field(english)
             if not value:
                 return "That did not look like a service. Ask them again."
             rec.session.requested_service = value
             logger.info(
                 "session=%s  CAPTURED service=%r (from %r, conf=%.2f)",
-                rec._short(), value, service, result.confidence,
+                rec._short(), value, spoken, result.confidence,
             )
             return f"Recorded service: {value}." + rec.state_line()
 
@@ -205,19 +321,34 @@ class LeadRecorder:
             # answers like "second floor" that no matcher can use.
             description=(
                 "Record the CITY where the caller needs the service, e.g. "
-                "Hyderabad or Bengaluru. A locality alone (Madhapur, Koramangala) "
-                "is acceptable if that is all they give, but prefer the city."
+                "Hyderabad or Bengaluru, in their own words and script. A locality "
+                "alone (Madhapur, Koramangala) is acceptable if that is all they "
+                "give, but prefer the city. Only call this after they said it."
             ),
         )
         async def set_city(
             city: Annotated[str, "The city, or the locality if that is all they said."],
         ) -> str:
-            result = extract(city, expecting=ConversationState.ASK_LOCATION)
-            value = sanitize_field(result.city_or_area or city)
+            spoken = (city or "").strip()
+            # Every word, as with a name: a place name is a proper noun too, and
+            # a city the caller never mentioned sends the lead to the wrong one.
+            if rec.grounded(spoken, every_word=True) is Verdict.NOT_HEARD:
+                return (
+                    "You did not hear that place in what the caller said. Do NOT "
+                    "record a city you are unsure of. Ask them again where they need "
+                    "the service."
+                ) + rec.state_line()
+            result = extract(spoken, expecting=ConversationState.ASK_LOCATION)
+            # Transliterated, not translated: "मोती नगर" is Moti Nagar, and a
+            # translator would offer "Pearl City".
+            english = await translate.english_place(result.city_or_area or spoken)
+            value = sanitize_field(format_name(english))
             if not value:
                 return "That did not look like a place. Ask them again."
             rec.session.city_or_area = value
-            logger.info("session=%s  CAPTURED city=%r", rec._short(), value)
+            logger.info(
+                "session=%s  CAPTURED city=%r (heard %r)", rec._short(), value, spoken
+            )
             return f"Recorded city: {value}." + rec.state_line()
 
         @function_tool(
@@ -236,6 +367,19 @@ class LeadRecorder:
 
             if not brain.available():
                 return "The directory is unavailable. Say you cannot look it up right now."
+
+            # Grounded loosely: the caller may have said a two-word name of which
+            # the transcript caught one. A wrong name here cannot invent a number
+            # — the lookup either finds a record or does not — and an approximate
+            # hit is read back for confirmation before any number is given.
+            if rec.grounded(business, every_word=False) is Verdict.NOT_HEARD:
+                return (
+                    "You did not hear that business name in what the caller said. "
+                    "Ask them to repeat which business they mean. Do not guess."
+                )
+            # The catalogue is English and matching is literal, so a name still
+            # in the caller's script reaches nothing.
+            business = await translate.english_name(business)
 
             # A category is not a request for anyone in particular. "wash" or
             # "events" names a kind of business, so there is no number to give
@@ -345,23 +489,27 @@ class LeadRecorder:
             # None of it needs to be finished before she says goodbye, and the
             # lead is already on disk, so a failure here loses nothing.
             async def _finish_in_background() -> None:
-                from .services import brain, lead_store, translate, whatsapp
+                from .services import brain, lead_store, whatsapp
 
                 await asyncio.to_thread(
                     lead_store.save, lead, rec.caller_id or ""
                 )
                 options = ""
                 if s.requested_service:
-                    # English first. The catalogue is English and matching is
-                    # literal, so a phrase still in the caller's script matches
-                    # nothing at all — "కార్ వాష్" never finds the "car wash"
-                    # category. Only the lookup is translated; the lead keeps
-                    # the caller's own words.
-                    service = await translate.to_english(s.requested_service)
+                    # No translation step here any more: the service and the city
+                    # were converted to English when they were captured, so what
+                    # is matched is exactly what is stored, shown in the logs, and
+                    # sent to the caller. This used to translate a Devanagari
+                    # value for the lookup only, which meant the lead and the
+                    # WhatsApp message kept a script the rest of the stack — and
+                    # the person actioning the lead — could not read.
+                    #
                     # Literal match, not semantic: the message names businesses
                     # and gives their numbers, and semantic search matched
                     # "electrician" to an EV charging company.
-                    hits = await brain.matches_for_service_async(service)
+                    hits = await brain.matches_for_service_async(
+                        s.requested_service, city=s.city_or_area
+                    )
                     options = brain.options_line(hits)
                 # Awaited, not fired: the outcome is recorded so a lead that
                 # did not get through stays in the outbox and is retried later,
@@ -392,9 +540,3 @@ class LeadRecorder:
                 lookup_vendor_contact, save_lead_tool]
 
 
-def prefill_from_profile(rec: LeadRecorder) -> list[str]:
-    """Apply returning-caller memory, same as the deterministic path."""
-    from . import caller_profiles
-
-    profile = caller_profiles.load(rec.caller_id)
-    return caller_profiles.apply_to_session(profile, rec.session)

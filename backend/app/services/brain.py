@@ -357,12 +357,21 @@ def _approximate_business(query: str, limit: int) -> list[Hit]:
     return hits
 
 
-def matches_for_service(service: str, limit: int = 3) -> list[Hit]:
+def matches_for_service(
+    service: str, limit: int = 3, *, city: str | None = None
+) -> list[Hit]:
     """Businesses that actually do this work, with phone numbers.
 
     Category matches win outright over keyword matches. Without that, "cleaning"
     returned a dental clinic — "teeth cleaning" is a fair keyword for a dentist
     and a terrible answer for someone who wants their house cleaned.
+
+    `city` narrows the result the same way `retrieve` does, and with the same
+    caveat: a listing with no city on it stays eligible, because most of them
+    have none and filtering them out would empty the catalogue. Both the query
+    and the caller's city are English by the time they reach here — the tools
+    convert them at capture — which is the whole reason a literal match can
+    work at all.
 
     Finding nothing is a valid outcome: there is no electrician in the
     catalogue, so the WhatsApp template falls back to "our team is
@@ -371,6 +380,23 @@ def matches_for_service(service: str, limit: int = 3) -> list[Hit]:
     query = (service or "").strip()
     if not available() or not query:
         return []
+    where = [
+        "owner_id = %(owner)s", "agent_id = %(agent)s", "phone IS NOT NULL",
+        "(lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
+        " OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')",
+    ]
+    params: dict = {
+        "q": query, "owner": settings.brain_owner_id, "agent": settings.brain_agent_id,
+    }
+    # The caller gives a locality as often as a city ("Madhapur"), and the
+    # listings carry cities — so this matches either way round rather than
+    # requiring the two strings to be the same shape.
+    place = (city or "").strip()
+    if place:
+        where.append("(city IS NULL OR city ILIKE %(city)s OR %(city_plain)s ILIKE"
+                     " '%%' || city || '%%')")
+        params["city"] = f"%{place}%"
+        params["city_plain"] = place
     try:
         with _connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -379,13 +405,9 @@ def matches_for_service(service: str, limit: int = 3) -> list[Hit]:
                 "  CASE WHEN lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
                 "       THEN 0 ELSE 1 END AS rank"
                 " FROM utter.knowledge"
-                " WHERE owner_id = %(owner)s AND agent_id = %(agent)s"
-                "   AND phone IS NOT NULL"
-                "   AND (lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
-                "        OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')"
+                f" WHERE {' AND '.join(where)}"
                 " ORDER BY rank, title",
-                {"q": query, "owner": settings.brain_owner_id,
-                 "agent": settings.brain_agent_id},
+                params,
             )
             rows = [Hit(*row) for row in cur.fetchall()]
         # Nothing matched literally. Before giving up, try the nearest category
@@ -399,7 +421,10 @@ def matches_for_service(service: str, limit: int = 3) -> list[Hit]:
             if nearest:
                 logger.info("no literal match for %r; trying category %r",
                             query[:40], nearest)
-                return matches_for_service(nearest, limit) if nearest != query else []
+                return (
+                    matches_for_service(nearest, limit, city=city)
+                    if nearest != query else []
+                )
             return []
         # A category hit is strong evidence; keyword-only hits are noise beside it.
         by_category = [h for h in rows if h.score == 0]
@@ -411,10 +436,12 @@ def matches_for_service(service: str, limit: int = 3) -> list[Hit]:
         return []
 
 
-async def matches_for_service_async(service: str, limit: int = 3) -> list[Hit]:
+async def matches_for_service_async(
+    service: str, limit: int = 3, *, city: str | None = None
+) -> list[Hit]:
     import asyncio
 
-    return await asyncio.to_thread(matches_for_service, service, limit)
+    return await asyncio.to_thread(matches_for_service, service, limit, city=city)
 
 
 async def find_business_async(name: str, limit: int = 5) -> list[Hit]:

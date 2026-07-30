@@ -39,12 +39,14 @@ from . import (
     response_generator,
     response_guard,
     smalltalk,
+    translate,
     whatsapp,
 )
 from .entity_extractor import (
     MIN_CONFIDENCE,
     UNKNOWN_SERVICE_CONFIDENCE,
     extract,
+    format_name,
 )
 from .llm_extractor import extract_with_llm
 
@@ -83,7 +85,8 @@ class ConversationManager:
         #: Stable caller identity (phone number / SIP URI) when the transport
         #: provides one. Only ever used as a lookup key; never stored raw.
         self.caller_id = caller_id
-        self.profile = caller_profiles.load(caller_id)
+        # No profile is loaded here. It is written at the end of a call and read
+        # by nothing on the conversation path — see `start()`.
         # Per-call turn cap only; wall-clock flood control lives in the transport.
         self.limiter = TurnLimiter()
         self._consecutive_smalltalk = 0
@@ -99,38 +102,22 @@ class ConversationManager:
     def start(self) -> TurnResult:
         """Open the call.
 
-        For a returning caller, known fields are prefilled and the state
-        machine skips straight past the questions they answer — no flow logic
-        is involved, because `next_state()` already ignores satisfied states.
+        Every call starts from the beginning, including a caller we have spoken
+        to before. Prefilling a remembered name and language used to skip
+        straight to the service question, which is two turns faster and wrong:
+        a value the caller has not said on *this* call is asserted to them as
+        fact, so a name captured badly once is repeated forever, and callers who
+        share a number are greeted as each other. `caller_profiles` still
+        records what a call learns — nothing reads it back into a session.
         """
         session = self.session
         old = session.state
 
-        prefilled = caller_profiles.apply_to_session(self.profile, session)
-        if prefilled:
-            logger.info(
-                "session=%s  returning caller (call #%d), prefilled %s",
-                session.session_id[:8],
-                self.profile.call_count,
-                ", ".join(prefilled),
-            )
-            session.state = next_state(session)
-            greeting = get_message(
-                MessageKey.WELCOME_BACK, session.language, name=session.user_name or ""
-            )
-            # Use the returning-caller phrasing so we don't greet someone we
-            # just named as though meeting them for the first time.
-            key = _PROMPT_FOR_STATE.get(session.state, MessageKey.ASK_SERVICE)
-            if key is MessageKey.ASK_SERVICE:
-                key = MessageKey.ASK_SERVICE_RETURNING
-            question = self._render(key)
-            reply = f"{greeting} {question}"
-        else:
-            session.state = ConversationState.LANGUAGE_SELECTION
-            reply = (
-                f"{get_message(MessageKey.WELCOME, session.language)} "
-                f"{get_message(MessageKey.ASK_LANGUAGE, session.language)}"
-            )
+        session.state = ConversationState.LANGUAGE_SELECTION
+        reply = (
+            f"{get_message(MessageKey.WELCOME, session.language)} "
+            f"{get_message(MessageKey.ASK_LANGUAGE, session.language)}"
+        )
 
         log_transition(logger, session.session_id, old.value, session.state.value, "call start")
         session.add_turn("agent", reply)
@@ -423,7 +410,7 @@ class ConversationManager:
             return switched
 
         if session.state is ConversationState.REVIEW:
-            return self._handle_review(text)
+            return await self._handle_review(text)
 
         expecting = session.state
         extraction = extract(text, expecting=expecting)
@@ -454,11 +441,11 @@ class ConversationManager:
                 return reply
             return self._reprompt(f"no value for {REQUIRED_FIELD.get(expecting, 'field')}")
 
-        self._commit(extraction, expecting)
+        await self._commit(extraction, expecting)
         self._consecutive_smalltalk = 0
         return self._advance()
 
-    def _handle_review(self, text: str) -> TurnResult:
+    async def _handle_review(self, text: str) -> TurnResult:
         """Read-back turn: agree, correct a value, or say what is wrong.
 
         Speech recognition is nondeterministic — the same audio gave "plumber"
@@ -478,7 +465,7 @@ class ConversationManager:
         # "it's an electrician", "Bangalore". Explicit patterns only: this runs
         # with expecting=None so a bare word cannot silently overwrite a field.
         correction = extract(text, expecting=None)
-        applied = self._apply_correction(correction)
+        applied = await self._apply_correction(correction)
         if applied:
             logger.info(
                 "session=%s  corrected %s at read-back",
@@ -514,7 +501,7 @@ class ConversationManager:
         session.add_turn("agent", reply)
         return self._result(reply)
 
-    def _apply_correction(self, extraction: Extraction) -> list[str]:
+    async def _apply_correction(self, extraction: Extraction) -> list[str]:
         """Overwrite already-captured fields from an explicit correction.
 
         Distinct from `_commit`, which never overwrites — at the read-back step
@@ -526,9 +513,9 @@ class ConversationManager:
             return applied
 
         for field, value in (
-            ("user_name", sanitize_field(extraction.name)),
-            ("requested_service", sanitize_field(extraction.requested_service)),
-            ("city_or_area", sanitize_field(extraction.city_or_area)),
+            ("user_name", await self._english(extraction.name, "name")),
+            ("requested_service", await self._english(extraction.requested_service, "service")),
+            ("city_or_area", await self._english(extraction.city_or_area, "place")),
         ):
             if value and value != getattr(session, field):
                 setattr(session, field, value)
@@ -630,7 +617,30 @@ class ConversationManager:
             source="llm" if not rules.confidence else "rules",
         )
 
-    def _commit(self, extraction: Extraction, expecting: ConversationState) -> bool:
+    async def _english(self, value: str | None, kind: str) -> str | None:
+        """A captured value in English, sanitised and ready to store.
+
+        Every field is stored in English whatever language the call is held in,
+        for the same reasons on both pipelines: the vendor catalogue is English
+        and matching it is literal, and the lead is read by a person and a
+        WhatsApp template that do not speak five scripts. A name or a place is
+        transliterated and a service translated — see `services/translate.py`.
+
+        Sanitised after conversion, not before: these values are persisted to
+        disk and rendered in the admin page, and may have come from an LLM that
+        read attacker-controlled text.
+        """
+        if not value:
+            return None
+        if kind == "service":
+            english = await translate.english_service(value)
+        elif kind == "place":
+            english = format_name(await translate.english_place(value))
+        else:
+            english = format_name(await translate.english_name(value))
+        return sanitize_field(english)
+
+    async def _commit(self, extraction: Extraction, expecting: ConversationState) -> bool:
         """Write validated values onto the session.
 
         Returns True if the field for the *expected* state was captured, which
@@ -648,12 +658,9 @@ class ConversationManager:
         captured: list[str] = []
 
         # Language is only ever set during selection, then locked for the call.
-        # Sanitise before committing: these values are persisted to disk and
-        # rendered in the admin page, and may have come from an LLM that read
-        # attacker-controlled text.
-        name = sanitize_field(extraction.name)
-        service = sanitize_field(extraction.requested_service)
-        area = sanitize_field(extraction.city_or_area)
+        name = await self._english(extraction.name, "name")
+        service = await self._english(extraction.requested_service, "service")
+        area = await self._english(extraction.city_or_area, "place")
 
         if extraction.language and session.selected_language is None:
             session.selected_language = extraction.language

@@ -1,23 +1,23 @@
-"""Returning-caller memory.
+"""What a call learned about the caller. Recorded, never replayed.
 
-Local services are a repeat business: someone who needed a plumber in March
-needs an electrician in June. Recognising them is the difference between a
-five-turn call and a two-turn one — on a phone line, that is the single
-biggest UX win available.
+This began as returning-caller memory: prefill the name and language from the
+last call and the state machine skips those questions, because `next_state()`
+ignores any state whose field is already filled. Two turns saved on a phone
+line is a real win, and it is not the win it looks like.
 
-The design point worth noticing: this needs **no changes to the state
-machine**. `next_state()` already skips any state whose field is filled, so
-"remembering" a caller is just prefilling `SessionData` before the call starts.
-Memory is data, not control flow.
+**Nothing here is read back into a conversation any more.** A prefilled value
+is asserted to the caller as fact — the agent never asks, and reads it back
+among the details it collected — so it has to be right, and it cannot be
+guaranteed to be. A name captured wrongly once is then repeated on every later
+call from that number with no turn in which the caller could correct it, and
+anyone sharing a handset or arriving behind a PBX that presents one number is
+greeted as somebody else. On the speech-to-speech path it was also load-bearing
+in the wrong direction: the prefilled name went into the tools' HELD line,
+whose whole purpose is to tell the model to stop asking.
 
-What is deliberately remembered, and what is not:
-
-  * **preferred language** — stable, unambiguous, saves a whole turn. Remembered.
-  * **name** — stable, and being greeted by name is the point. Remembered.
-  * **service** — changes every call; that is *why* they are calling. Never
-    prefilled, only recorded for analytics.
-  * **area** — people move, and they may want service at a different address.
-    Recorded but never assumed; treat it as a suggestion, not a fact.
+So `remember()` still writes — the profiles are worth having for analytics, and
+`forget()` is a legal obligation — and `load()` is left for the CLI and for
+erasure. No conversation path calls either.
 
 Privacy. A phone number is personal data under India's DPDP Act 2023, so the
 raw identifier is never stored: profiles are keyed by a salted SHA-256 hash,
@@ -152,26 +152,6 @@ def remember(caller_id: str | None, session: SessionData) -> CallerProfile | Non
         profile.preferred_language.value if profile.preferred_language else "?",
     )
     return profile
-
-
-def apply_to_session(profile: CallerProfile | None, session: SessionData) -> list[str]:
-    """Prefill a new session from a profile. Returns the fields prefilled.
-
-    Only language and name are prefilled. The service is what the caller is
-    ringing about, and the area may have changed — assuming either would put
-    words in their mouth.
-    """
-    if profile is None or not profile.is_returning:
-        return []
-
-    prefilled: list[str] = []
-    if profile.preferred_language and session.selected_language is None:
-        session.selected_language = profile.preferred_language
-        prefilled.append("selected_language")
-    if profile.name and session.user_name is None:
-        session.user_name = profile.name
-        prefilled.append("user_name")
-    return prefilled
 
 
 def forget(caller_id: str) -> bool:

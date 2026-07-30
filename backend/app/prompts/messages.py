@@ -18,13 +18,11 @@ from ..languages import Language
 
 class MessageKey(str, Enum):
     WELCOME = "welcome"
-    WELCOME_BACK = "welcome_back"
     ASK_LANGUAGE = "ask_language"
     LANGUAGE_NOT_UNDERSTOOD = "language_not_understood"
     ASK_NAME = "ask_name"
     REPROMPT_NAME = "reprompt_name"
     ASK_SERVICE = "ask_service"
-    ASK_SERVICE_RETURNING = "ask_service_returning"
     REPROMPT_SERVICE = "reprompt_service"
     ASK_LOCATION = "ask_location"
     REPROMPT_LOCATION = "reprompt_location"
@@ -52,14 +50,6 @@ _MESSAGES: dict[MessageKey, dict[Language, str]] = {
         Language.TELUGU: "లోకల్ మామాకు స్వాగతం! మీరు నన్ను మామి అని పిలవచ్చు.",
         Language.TAMIL: "லோக்கல் மாமாவிற்கு வரவேற்கிறோம்! நீங்கள் என்னை மாமி என்று அழைக்கலாம்.",
         Language.KANNADA: "ಲೋಕಲ್ ಮಾಮಾಗೆ ಸ್ವಾಗತ! ನೀವು ನನ್ನನ್ನು ಮಾಮಿ ಎಂದು ಕರೆಯಬಹುದು.",
-    },
-    MessageKey.WELCOME_BACK: {
-        Language.ENGLISH: "Welcome back to Local Mama, {name}! Mami here.",
-        Language.HINDI: "लोकल मामा में आपका फिर से स्वागत है, {name}! मामी बोल रही हूँ।",
-        Language.BENGALI: "লোকাল মামায় আবার স্বাগতম, {name}! আমি মামি বলছি।",
-        Language.TELUGU: "లోకల్ మామాకు మళ్ళీ స్వాగతం, {name}! నేను మామిని.",
-        Language.TAMIL: "லோக்கல் மாமாவிற்கு மீண்டும் வரவேற்கிறோம், {name}! நான் மாமி பேசுகிறேன்.",
-        Language.KANNADA: "ಲೋಕಲ್ ಮಾಮಾಗೆ ಮತ್ತೆ ಸ್ವಾಗತ, {name}! ನಾನು ಮಾಮಿ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ.",
     },
     # Deliberately does NOT recite the six languages.
     #
@@ -126,16 +116,6 @@ _MESSAGES: dict[MessageKey, dict[Language, str]] = {
         Language.TELUGU: "మిమ్మల్ని కలవడం సంతోషం, {name}! ఈరోజు మీకు ఏ సేవ కావాలి?",
         Language.TAMIL: "உங்களைச் சந்தித்ததில் மகிழ்ச்சி, {name}! இன்று உங்களுக்கு என்ன சேவை தேவை?",
         Language.KANNADA: "ನಿಮ್ಮನ್ನು ಭೇಟಿಯಾಗಿ ಸಂತೋಷವಾಯಿತು, {name}! ಇಂದು ನಿಮಗೆ ಯಾವ ಸೇವೆ ಬೇಕು?",
-    },
-    # A returning caller has already been met and already been named in the
-    # welcome-back line — repeating "nice to meet you, {name}" reads as amnesia.
-    MessageKey.ASK_SERVICE_RETURNING: {
-        Language.ENGLISH: "What service do you need today?",
-        Language.HINDI: "आज आपको कौन सी सेवा चाहिए?",
-        Language.BENGALI: "আজ আপনার কোন পরিষেবা দরকার?",
-        Language.TELUGU: "ఈరోజు మీకు ఏ సేవ కావాలి?",
-        Language.TAMIL: "இன்று உங்களுக்கு என்ன சேவை தேவை?",
-        Language.KANNADA: "ಇಂದು ನಿಮಗೆ ಯಾವ ಸೇವೆ ಬೇಕು?",
     },
     MessageKey.REPROMPT_SERVICE: {
         Language.ENGLISH: (
