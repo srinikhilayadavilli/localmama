@@ -3,8 +3,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .env
-data/leads/*.json
-data/transcripts/*.json
 .DS_Store
 
 # Machine-local Claude Code permissions, not project config.

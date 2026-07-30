@@ -1,0 +1,53 @@
+# Render blueprint for the Local Mama lead backend.
+#
+# Two processes off one image. They are separated because their failure modes
+# are different: the API must stay responsive for the agent, and the sweep does
+# slow, retry-heavy work against a provider that is sometimes down for hours.
+# Inside the agent these shared a process with a live phone call.
+#
+# The agent itself is NOT here — it deploys to LiveKit Cloud.
+
+services:
+  - type: web
+    name: localmama-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    region: singapore              # nearest Render region to ap-south LiveKit
+    plan: starter
+    healthCheckPath: /healthz
+    # Once per deploy, by one process — not lazily from inside a request.
+    preDeployCommand: python -m backend.migrate
+    envVars: &backend_env
+      - key: DATABASE_URL
+        sync: false                # Neon DSN
+      - key: AGENT_TOKEN
+        generateValue: true        # the agent presents this as a bearer token
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: WHATSAPP_ENABLED
+        value: "1"
+      - key: WHATSAPP_API_KEY
+        sync: false
+      - key: WHATSAPP_TEMPLATE_NAME
+        sync: false
+      - key: BRAIN_OWNER_ID
+        value: localmama
+      - key: BRAIN_AGENT_ID
+        value: localmama
+      - key: REVIEW_THRESHOLD
+        value: "0.75"
+      - key: TRANSCRIPT_RETENTION_DAYS
+        value: "30"
+      - key: LOG_LEVEL
+        value: INFO
+
+  - type: worker
+    name: localmama-outbox
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    region: singapore
+    plan: starter
+    dockerCommand: python -m backend.outbox_worker
+    envVars: *backend_env

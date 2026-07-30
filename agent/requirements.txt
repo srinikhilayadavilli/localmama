@@ -1,0 +1,17 @@
+# Local Mama voice agent — deployed to LiveKit.
+#
+# Four things. No database driver, no Sarvam, no WhatsApp, no embedding model:
+# this process talks, and everything it learns leaves over HTTP.
+#
+# Pinned exactly. Three modules carry "verified against livekit-agents 1.6.7"
+# comments, and a floating range is how a build three weeks from now picks up a
+# version that changes turn-taking with no test gate in between.
+
+livekit-agents==1.6.7
+livekit-plugins-openai==1.6.7
+pydantic==2.10.4
+python-dotenv==1.0.1
+httpx==0.28.1
+
+# Only when REALTIME_PROVIDER=gemini:
+# livekit-plugins-google==1.6.7

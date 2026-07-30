@@ -1,0 +1,347 @@
+"""Read-only access to the shared vendor catalogue ("the brain").
+
+Backed by the NeonDB instance the Vaani bridge also uses, scoped by
+`owner_id`/`agent_id` so both products share one store without colliding. Local
+Mama's rows live under `localmama/localmama`.
+
+**Matching is literal, never semantic.** The hybrid pgvector retrieval this
+started as is gone: it was already dead code by the time it was removed, and it
+was removed rather than revived because the failure it produces is the worst
+kind available here. Semantic search always returns its nearest neighbour, so
+"electrician" matched an EV charging company at 0.59 — a real business, with a
+real phone number, sent to a caller who wanted their wiring fixed. Finding
+nothing is a valid and honest outcome; the WhatsApp template falls back to "our
+team is shortlisting", which is true.
+
+Deliberately read-only. Ingest, editing and curation stay in the Vaani
+dashboard, which owns the write path.
+
+Everything here degrades to `[]` on a database problem rather than raising: a
+lookup failing must cost a lead its vendor list, not the lead itself.
+"""
+
+from __future__ import annotations
+
+import difflib
+import time
+from dataclasses import dataclass, field
+
+from .. import db
+from ..config import settings
+from ..logger import get_logger
+
+logger = get_logger("localmama.brain")
+
+
+@dataclass
+class Hit:
+    """One catalogue entry."""
+
+    id: int
+    title: str
+    content: str
+    category: str | None
+    city: str | None
+    phone: str | None
+    attrs: dict = field(default_factory=dict)
+    rank: int = 0
+    #: True when this was reached by spelling rather than by a literal match.
+    #: The caller is asked to confirm the name before the number is read out —
+    #: a close spelling is a guess, and the cost of a wrong one is a stranger's
+    #: phone ringing.
+    approximate: bool = False
+
+
+_COLUMNS = (
+    "id, title, content, category, city, phone, coalesce(attrs,'{}'::jsonb)"
+)
+
+
+def available() -> bool:
+    return db.available()
+
+
+def _scope() -> tuple[str, str]:
+    return settings.brain_owner_id, settings.brain_agent_id
+
+
+# ---------------------------------------------------------------------------
+# Categories
+# ---------------------------------------------------------------------------
+
+#: The catalogue's category list changes when someone edits the dashboard,
+#: which is on the order of once a week. Re-querying it on every lookup — which
+#: the agent did, opening a fresh connection each time — bought nothing.
+_CATEGORY_TTL = 300.0
+_categories: set[str] = set()
+_categories_at: float = 0.0
+
+
+def categories(force: bool = False) -> set[str]:
+    """Every category in the catalogue, lowercased. Cached for `_CATEGORY_TTL`."""
+    global _categories, _categories_at
+    if not available():
+        return set()
+    if not force and _categories and (time.monotonic() - _categories_at) < _CATEGORY_TTL:
+        return _categories
+    try:
+        owner, agent = _scope()
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT lower(category) FROM utter.knowledge"
+                " WHERE owner_id = %s AND agent_id = %s AND category IS NOT NULL",
+                (owner, agent),
+            )
+            _categories = {r[0] for r in cur.fetchall() if r[0]}
+        _categories_at = time.monotonic()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read categories: %s", exc)
+    return _categories
+
+
+def looks_like_a_category(query: str) -> bool:
+    """Whether the caller named a kind of business rather than a business.
+
+    Matched as a whole word so "wash" is caught by "Car Wash" while "WOW Wash"
+    is still read as the business it is.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    for category in categories():
+        if q == category or q in category.split():
+            return True
+    return False
+
+
+#: How close a phrase has to be to a category before it is treated as that
+#: category. 0.75 keeps "jewelry store"/"jewellery stores" (0.86) and
+#: "mobile shop"/"mobile shops" (0.96) while rejecting "photographer", whose
+#: best neighbour is "professional services" at 0.46 — there is no
+#: photographer in the catalogue, and saying so is the correct answer.
+CATEGORY_CUTOFF = 0.75
+
+
+def closest_category(query: str) -> str | None:
+    """The catalogue category nearest to `query` by spelling, or None.
+
+    Only ever consulted after a literal match has failed. Whole-phrase
+    similarity rather than per-word, so "car wash" is not dragged towards
+    "car rentals" by its first word.
+    """
+    phrase = (query or "").strip().lower()
+    if not phrase:
+        return None
+    found = difflib.get_close_matches(
+        phrase, sorted(categories()), n=1, cutoff=CATEGORY_CUTOFF
+    )
+    return found[0] if found else None
+
+
+# ---------------------------------------------------------------------------
+# Business lookup, by name
+# ---------------------------------------------------------------------------
+
+#: Names are matched tighter than categories. A category is a word the caller
+#: chose loosely; a name is a specific record, and the cost of the nearest one
+#: being wrong is a stranger's phone ringing. 0.82 keeps "Pax Jewellers" ->
+#: "Pax Jwellers" (0.96) and "Cleanmates" -> "Clean Mates" (0.95) while
+#: rejecting "Speed Autos" -> "Speed Kawasaki Kolkata".
+NAME_CUTOFF = 0.82
+
+#: Typography the catalogue contains but a caller cannot say or a transcriber
+#: produce: a curly apostrophe in "Brinda's kitchen", a slash in "M/S B R
+#: Enterprises". Folded on BOTH sides before comparing, so neither has to be
+#: cleaned up in the data.
+#: Every form maps straight to a space in ONE pass. Mapping "’" to "'" and
+#: "'" to " " looks equivalent and is not: `str.translate` does not re-examine
+#: what it substitutes, so "Brinda’s" became "brinda's" while "Brinda's" became
+#: "brinda s" — the exact pair this exists to reconcile.
+_PUNCT = str.maketrans({ch: " " for ch in "’‘'\"“”/.,-–—()&"})
+
+
+def normalise_name(text: str) -> str:
+    """A business name reduced to what a caller could actually say."""
+    return " ".join((text or "").lower().translate(_PUNCT).split())
+
+
+def find_business(name: str, limit: int = 5) -> list[Hit]:
+    """Businesses matching a NAME, most literal first.
+
+    A caller asking "what is Brimmies Cafe's number?" wants an exact record.
+    """
+    query = (name or "").strip()
+    if not available() or not query:
+        return []
+    owner, agent = _scope()
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                f"SELECT {_COLUMNS},"
+                "  CASE WHEN lower(title) = lower(%(q)s) THEN 0"
+                "       WHEN lower(title) LIKE lower(%(q)s) || '%%' THEN 1"
+                "       ELSE 2 END AS rank"
+                " FROM utter.knowledge"
+                " WHERE owner_id = %(owner)s AND agent_id = %(agent)s"
+                "   AND (lower(title) LIKE '%%' || lower(%(q)s) || '%%'"
+                "        OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')"
+                " ORDER BY rank, title LIMIT %(k)s",
+                {"q": query, "k": limit, "owner": owner, "agent": agent},
+            )
+            found = [Hit(*row) for row in cur.fetchall()]
+        if found:
+            logger.info("name lookup %r -> %s", query[:40], [h.title for h in found])
+            return found
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("name lookup failed (%s); continuing without it", exc)
+        return []
+    return _approximate_business(query, limit)
+
+
+def _approximate_business(query: str, limit: int) -> list[Hit]:
+    """Nearest titles by spelling, once a literal match has failed.
+
+    Deliberately edit distance and not embeddings. The neighbourhood of a
+    spelling is a handful of near-identical strings; the neighbourhood of a
+    meaning is the whole catalogue.
+    """
+    wanted = normalise_name(query)
+    if not wanted:
+        return []
+    owner, agent = _scope()
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT title FROM utter.knowledge"
+                " WHERE owner_id = %s AND agent_id = %s AND title IS NOT NULL",
+                (owner, agent),
+            )
+            titles = [r[0] for r in cur.fetchall()]
+
+        scored = sorted(
+            ((difflib.SequenceMatcher(None, wanted, normalise_name(t)).ratio(), t)
+             for t in titles),
+            key=lambda pair: (-pair[0], pair[1]),
+        )
+        near = [t for score, t in scored[:limit] if score >= NAME_CUTOFF]
+        if not near:
+            logger.info("no business close to %r (best %.2f)",
+                        query[:40], scored[0][0] if scored else 0.0)
+            return []
+
+        with db.cursor() as cur:
+            cur.execute(
+                f"SELECT {_COLUMNS}, 0"
+                " FROM utter.knowledge"
+                " WHERE owner_id = %s AND agent_id = %s AND title = ANY(%s)"
+                " ORDER BY title",
+                (owner, agent, near),
+            )
+            hits = [Hit(*row) for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("approximate lookup failed (%s)", exc)
+        return []
+
+    for hit in hits:
+        hit.approximate = True
+    logger.info("name lookup %r -> %s (approximate)", query[:40], [h.title for h in hits])
+    return hits
+
+
+# ---------------------------------------------------------------------------
+# Business lookup, by service
+# ---------------------------------------------------------------------------
+
+
+def matches_for_service(
+    service: str, limit: int = 3, *, city: str | None = None
+) -> list[Hit]:
+    """Businesses that actually do this work, with phone numbers.
+
+    Category matches win outright over keyword matches. Without that, "cleaning"
+    returned a dental clinic — "teeth cleaning" is a fair keyword for a dentist
+    and a terrible answer for someone who wants their house cleaned.
+
+    `city` is a hard filter, not a similarity term: a plumber in Chennai is not
+    a weaker match for a Hyderabad caller, it is the wrong answer. Listings with
+    no city stay eligible, because most of them have none and excluding them
+    would empty the catalogue.
+
+    Both the query and the city are English by the time they reach here — the
+    pipeline normalises before matching — which is the whole reason a literal
+    match can work at all.
+    """
+    query = (service or "").strip()
+    if not available() or not query:
+        return []
+    owner, agent = _scope()
+    where = [
+        "owner_id = %(owner)s", "agent_id = %(agent)s", "phone IS NOT NULL",
+        "(lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
+        " OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')",
+    ]
+    params: dict = {"q": query, "owner": owner, "agent": agent}
+
+    # The caller gives a locality as often as a city ("Madhapur"), and the
+    # listings carry cities — so this matches either way round rather than
+    # requiring the two strings to be the same shape.
+    place = (city or "").strip()
+    if place:
+        where.append("(city IS NULL OR city ILIKE %(city)s"
+                     " OR %(city_plain)s ILIKE '%%' || city || '%%')")
+        params["city"] = f"%{place}%"
+        params["city_plain"] = place
+
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                f"SELECT {_COLUMNS},"
+                "  CASE WHEN lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
+                "       THEN 0 ELSE 1 END AS rank"
+                " FROM utter.knowledge"
+                f" WHERE {' AND '.join(where)}"
+                " ORDER BY rank, title",
+                params,
+            )
+            rows = [Hit(*row) for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("service match failed (%s); continuing without it", exc)
+        return []
+
+    # Nothing matched literally. Before giving up, try the nearest category by
+    # spelling: translation returns American forms ("Jewelry store") where the
+    # catalogue is British ("jewellery stores"), and a caller's phrase is rarely
+    # a category verbatim ("mobile shop" vs "mobile shops"). Deliberately the
+    # *second* attempt — a literal hit is better evidence than a close one.
+    if not rows:
+        nearest = closest_category(query)
+        if nearest and nearest != query:
+            logger.info("no literal match for %r; trying category %r", query[:40], nearest)
+            return matches_for_service(nearest, limit, city=city)
+        return []
+
+    # A category hit is strong evidence; keyword-only hits are noise beside it.
+    by_category = [h for h in rows if h.rank == 0]
+    chosen = (by_category or rows)[:limit]
+    logger.info("service match %r -> %s", query[:40], [h.title for h in chosen])
+    return chosen
+
+
+# ---------------------------------------------------------------------------
+# Presentation
+# ---------------------------------------------------------------------------
+
+
+def spoken_phone(phone: str | None) -> str:
+    """Digits grouped so a TTS engine reads them as a number, not a year.
+
+    "9735927627" said as one token comes out as garbage on every engine we have
+    tried; in groups it is dictatable.
+    """
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if len(digits) == 10:
+        return f"{digits[:5]} {digits[5:]}"
+    if len(digits) == 12 and digits.startswith("91"):
+        return f"+91 {digits[2:7]} {digits[7:]}"
+    return phone or ""
+

@@ -1,0 +1,23 @@
+# Local Mama lead backend — deployed to Render.
+#
+# Deliberately short. This service has no audio stack, no LiveKit, no realtime
+# SDK and no embedding model: the ~500MB sentence-transformers dependency went
+# with the semantic retrieval it served, which was already dead code and whose
+# failure mode — handing a caller the nearest neighbour with a real phone
+# number attached — is the worst available here.
+#
+# Pinned exactly. Floating ranges are how a `docker build` in three weeks picks
+# up a minor version that changes behaviour with no test gate in between.
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+python-dotenv==1.0.1
+
+# Postgres, pooled. `psycopg_pool` is the reason a lookup is 40ms rather than a
+# TLS handshake.
+psycopg[binary]==3.2.3
+psycopg-pool==3.2.4
+
+# Sarvam (translate/transliterate) and CampaignBot (WhatsApp).
+httpx==0.28.1
