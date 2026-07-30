@@ -263,18 +263,7 @@ async def run_session(ctx: JobContext, participant) -> None:  # noqa: ANN001
                 return
             await asyncio.sleep(0.5)
 
-        # Wait for the outro, rather than guessing how long it takes.
-        #
-        # A fixed delay cut the closing line off mid-sentence: save_lead fires
-        # BEFORE the model speaks its goodbye, so counting from there means
-        # racing a sentence whose length is not known — and in Telugu or Tamil
-        # the same words take longer than the English the guess was tuned on.
-        deadline = time.monotonic() + settings.hangup_max_wait_seconds
-        while time.monotonic() < deadline and session.agent_state != "speaking":
-            await asyncio.sleep(0.2)
-        started = session.agent_state == "speaking"
-        while time.monotonic() < deadline and session.agent_state == "speaking":
-            await asyncio.sleep(0.2)
+        started = await wait_for_outro(lambda: session.agent_state)
 
         logger.info("call=%s  outro %s; hanging up after %.1fs tail", s.short(),
                     "finished" if started else "never started (timed out)",
@@ -295,6 +284,50 @@ async def run_session(ctx: JobContext, participant) -> None:  # noqa: ANN001
         hangup_task.cancel()
 
     ctx.add_shutdown_callback(_cancel_hangup)
+
+
+#: How long to wait for the goodbye to begin once the read-back has finished.
+#: Not a setting: it is the length of one pause in a conversation, not
+#: something a deployment tunes. A model that has already said everything it
+#: intends to should not hold a metered line for the whole backstop.
+OUTRO_START_WAIT = 4.0
+
+
+async def wait_for_outro(agent_state, poll: float = 0.2) -> bool:
+    """Wait for the closing line to be spoken. True if it was.
+
+    `save_lead` is called *inside the same turn as the read-back* — the model
+    says "...I'll send the details to your WhatsApp" and calls the tool as part
+    of the same utterance. So at save time the agent is usually already
+    speaking, and that utterance is **not** the goodbye.
+
+    The first version of this waited for "speaking", found it immediately, and
+    then waited for that sentence to end — which is the read-back. It hung up a
+    second and a half later, and a real caller got two words of the outro
+    ("Local Mama") before the line dropped.
+
+    So: let whatever is in flight finish, then wait for a *new* utterance to
+    start, then wait for that one to end. A fixed delay cannot work here —
+    the same goodbye takes longer in Telugu than the English it was timed on.
+    """
+    deadline = time.monotonic() + settings.hangup_max_wait_seconds
+
+    # 1. Whatever was in flight at save time — the read-back — finishes.
+    while time.monotonic() < deadline and agent_state() == "speaking":
+        await asyncio.sleep(poll)
+
+    # 2. The goodbye begins. Bounded tighter than the backstop: if the model
+    #    is not going to speak again, waiting 25s is 25s of dead air.
+    start_by = min(deadline, time.monotonic() + OUTRO_START_WAIT)
+    while time.monotonic() < start_by and agent_state() != "speaking":
+        await asyncio.sleep(poll)
+    if agent_state() != "speaking":
+        return False
+
+    # 3. And ends.
+    while time.monotonic() < deadline and agent_state() == "speaking":
+        await asyncio.sleep(poll)
+    return True
 
 
 async def _end_room(ctx: JobContext, sid: str) -> None:
