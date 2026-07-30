@@ -213,3 +213,121 @@ def test_service_matching_never_uses_embeddings() -> None:
         source = inspect.getsource(fn)
         assert "_embed" not in source, f"{fn.__name__} must not embed"
         assert "embedding <=>" not in source
+
+
+@pytest.mark.parametrize(
+    "spoken,stored",
+    [
+        # Typography the catalogue has and a caller cannot say. These fold to
+        # the same string outright — no fuzzy matching involved.
+        ("Brinda's kitchen", "Brinda’s kitchen"),   # straight vs curly apostrophe
+        ("M S B R Enterprises", "M/S B R Enterprises"),
+        ("Fix It Up - Phone Repairs", "Fix It Up- Phone Repairs"),
+    ],
+)
+def test_a_name_survives_punctuation_the_caller_cannot_pronounce(
+    spoken: str, stored: str
+) -> None:
+    """No transcriber emits U+2019, so that business was unreachable by name."""
+    from backend.app.services.brain import normalise_name
+
+    assert normalise_name(spoken) == normalise_name(stored)
+
+
+@pytest.mark.parametrize(
+    "spoken,stored",
+    [
+        # These do NOT normalise equal — they are close, and it is the ratio
+        # that carries them. Kept separate so it stays obvious which mechanism
+        # is doing the work.
+        ("Pax Jewellers", "Pax Jwellers"),
+        ("Brindas kitchen", "Brinda’s kitchen"),  # apostrophe dropped entirely
+        ("Cleanmates", "Clean Mates"),
+        ("MS B R Enterprises", "M/S B R Enterprises"),
+        ("Frost and Sugar", "Frost O Sugar"),
+    ],
+)
+def test_a_close_spelling_clears_the_name_cutoff(spoken: str, stored: str) -> None:
+    import difflib
+
+    from backend.app.services.brain import NAME_CUTOFF, normalise_name
+
+    ratio = difflib.SequenceMatcher(
+        None, normalise_name(spoken), normalise_name(stored)
+    ).ratio()
+    assert ratio >= NAME_CUTOFF, f"{spoken!r} vs {stored!r} scored {ratio:.2f}"
+
+
+def test_two_different_businesses_stay_apart() -> None:
+    """The cutoff has to reject as well as accept, or it is not a floor."""
+    import difflib
+
+    from backend.app.services.brain import NAME_CUTOFF, normalise_name
+
+    ratio = difflib.SequenceMatcher(
+        None, normalise_name("Clean Mates"), normalise_name("Speed Auto")
+    ).ratio()
+    assert ratio < NAME_CUTOFF
+
+
+def test_a_different_business_is_not_folded_into_another() -> None:
+    from backend.app.services.brain import normalise_name
+
+    assert normalise_name("Clean Mates") != normalise_name("Speed Auto")
+
+
+@pytest.mark.asyncio
+async def test_an_approximate_name_is_confirmed_before_the_number(monkeypatch) -> None:
+    """The safeguard that makes fuzzy names safe.
+
+    "Pax Jewellers" resolving to "Pax Jwellers" is almost certainly right. Giving
+    out a number because it almost certainly was is the outcome worth a turn to
+    avoid, so the name is read back first.
+    """
+    from backend.app import realtime_tools
+    from backend.app.services import brain
+
+    hit = brain.Hit(1, "Pax Jwellers", "", "jewellery stores", None, "9836318445")
+    hit.approximate = True
+
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "categories", lambda: set())
+
+    async def _found(name, limit=5):
+        return [hit]
+
+    monkeypatch.setattr(brain, "find_business_async", _found)
+    tools = {t.info.name: t for t in realtime_tools.LeadRecorder().build_tools()}
+    reply = await tools["lookup_vendor_contact"](business="Pax Jewellers")
+    assert "Pax Jwellers" in reply
+    assert "98363" not in reply, "the number must not be read before confirmation"
+
+
+@pytest.mark.asyncio
+async def test_an_exact_name_still_answers_immediately(monkeypatch) -> None:
+    """Confirmation is the price of a guess, not of every lookup."""
+    from backend.app import realtime_tools
+    from backend.app.services import brain
+
+    hit = brain.Hit(1, "Clean Mates", "", "house cleaning", None, "9147019147")
+
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "categories", lambda: set())
+
+    async def _found(name, limit=5):
+        return [hit]
+
+    monkeypatch.setattr(brain, "find_business_async", _found)
+    tools = {t.info.name: t for t in realtime_tools.LeadRecorder().build_tools()}
+    reply = await tools["lookup_vendor_contact"](business="Clean Mates")
+    assert "91470 19147" in reply
+
+
+def test_an_absent_business_is_never_approximated_into_a_real_one() -> None:
+    """A close spelling is a guess; no spelling at all must stay a refusal."""
+    import inspect
+
+    from backend.app.services import brain
+
+    source = inspect.getsource(brain._approximate_business)
+    assert "NAME_CUTOFF" in source, "approximate matching must have a floor"

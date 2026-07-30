@@ -265,6 +265,16 @@ class LeadRecorder:
                 )
 
             hit = exact[0] if exact else matches[0]
+            # Reached by spelling, not by a literal match. Naming it back is the
+            # whole safeguard: "Pax Jewellers" resolving to "Pax Jwellers" is
+            # almost certainly right, and giving a stranger's number because it
+            # almost certainly was is the one outcome worth a turn to avoid.
+            if hit.approximate:
+                return (
+                    f"No business is spelled {business!r}, but {hit.title} is close. "
+                    f"Ask the caller if that is the one they mean BEFORE giving any "
+                    f"number. Do not read the number yet."
+                )
             if not hit.phone:
                 return (
                     f"{hit.title} is listed but has no phone number on record. Tell "
@@ -335,17 +345,23 @@ class LeadRecorder:
             # None of it needs to be finished before she says goodbye, and the
             # lead is already on disk, so a failure here loses nothing.
             async def _finish_in_background() -> None:
-                from .services import brain, lead_store, whatsapp
+                from .services import brain, lead_store, translate, whatsapp
 
                 await asyncio.to_thread(
                     lead_store.save, lead, rec.caller_id or ""
                 )
                 options = ""
                 if s.requested_service:
+                    # English first. The catalogue is English and matching is
+                    # literal, so a phrase still in the caller's script matches
+                    # nothing at all — "కార్ వాష్" never finds the "car wash"
+                    # category. Only the lookup is translated; the lead keeps
+                    # the caller's own words.
+                    service = await translate.to_english(s.requested_service)
                     # Literal match, not semantic: the message names businesses
                     # and gives their numbers, and semantic search matched
                     # "electrician" to an EV charging company.
-                    hits = await brain.matches_for_service_async(s.requested_service)
+                    hits = await brain.matches_for_service_async(service)
                     options = brain.options_line(hits)
                 # Awaited, not fired: the outcome is recorded so a lead that
                 # did not get through stays in the outbox and is retried later,
