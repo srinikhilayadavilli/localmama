@@ -221,6 +221,20 @@ async def process(call_id: str) -> dict | None:
         review_reason=reason or None, vendors=_json(vendors),
         processed_at=_now(),
     )
+    # Nothing is sent for a lead with no service.
+    #
+    # The template reads "here are some {service} options in {city}", and with
+    # those fields empty it goes out as "here are some the service options in
+    # your area" — to a caller who only picked a language before hanging up.
+    # A real one of those reached a real phone. The lead is still stored and
+    # still worth a human following up; it is the automatic message that has
+    # nothing to say.
+    if not english["service"]:
+        logger.info("call %s has no service; storing the lead but sending nothing",
+                    call_id[:8])
+        store.mark_whatsapp(call_id, False, "incomplete lead")
+        return store.get_lead(call_id)
+
     logger.info(
         "processed %s: %s / %s / %s — %d vendor(s)%s",
         call_id[:8], english["name"], english["service"], english["city"],

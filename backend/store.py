@@ -135,7 +135,8 @@ def mark_whatsapp(call_id: str, ok: bool, error: str = "") -> None:
     """
     status = (
         "sent" if ok
-        else ("skipped" if error in {"no phone", "not configured"} else "pending")
+        else ("skipped" if error in {"no phone", "not configured", "incomplete lead"}
+              else "pending")
     )
     try:
         with db.connection() as conn:

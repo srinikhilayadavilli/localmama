@@ -1,0 +1,108 @@
+"""When a caller gets a WhatsApp message, and when they must not.
+
+Written because a real phone received:
+
+    Hi there,
+    As Requested, here are some the service options in your area:
+
+That was a caller who picked a language and hung up. The lead is worth keeping;
+the automatic message had nothing to say.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from backend import pipeline
+
+
+class FakeStore:
+    def __init__(self, lead: dict) -> None:
+        self.lead = lead
+        self.marks: list[tuple] = []
+        self.updates: list[dict] = []
+
+    def get_lead(self, call_id):
+        return self.lead
+
+    def transcript_for(self, call_id):
+        return self.lead.get("_heard", [])
+
+    def upsert_call(self, call_id, **fields):
+        self.updates.append(fields)
+
+    def mark_whatsapp(self, call_id, ok, error=""):
+        self.marks.append((ok, error))
+
+
+@pytest.fixture()
+def sent(monkeypatch):
+    """Records every WhatsApp send the pipeline attempts."""
+    calls = []
+
+    async def _send(phone, **kw):
+        calls.append({"phone": phone, **kw})
+        return {"ok": True}
+
+    monkeypatch.setattr(pipeline.whatsapp, "send", _send)
+    monkeypatch.setattr(pipeline.brain, "matches_for_service", lambda *a, **k: [])
+    return calls
+
+
+def _lead(**over) -> dict:
+    base = {
+        "call_id": "c1", "caller_phone": "+919739960092", "confirmed": True,
+        "raw": {}, "_heard": [],
+    }
+    base.update(over)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_a_language_only_call_sends_nothing(monkeypatch, sent):
+    """The bug. `raw` is truthy — it holds the language — so this sails past
+    the empty-lead guard and used to message the caller about "the service"."""
+    store = FakeStore(_lead(raw={"language": "telugu"}))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+
+    assert sent == []
+    assert store.marks == [(False, "incomplete lead")]
+
+
+@pytest.mark.asyncio
+async def test_a_name_only_call_sends_nothing(monkeypatch, sent):
+    """A caller who gave their name and hung up. Still a lead worth chasing,
+    still nothing an automatic message can usefully say."""
+    store = FakeStore(_lead(raw={"language": "telugu", "name": "Ravi"}))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_lead_with_a_service_is_sent(monkeypatch, sent):
+    """The service is what the message is about, so it is the bar."""
+    store = FakeStore(_lead(
+        raw={"language": "telugu", "name": "Ravi", "service": "plumber",
+             "city": "Hyderabad"},
+        _heard=["my name is Ravi", "plumber", "Hyderabad"],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+
+    assert len(sent) == 1
+    assert sent[0]["service"] == "plumber"
+    assert sent[0]["phone"] == "+919739960092"
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_captured_nothing_sends_nothing(monkeypatch, sent):
+    store = FakeStore(_lead(raw={}))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+    assert sent == []
