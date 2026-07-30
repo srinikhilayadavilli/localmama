@@ -18,7 +18,7 @@ next to the setting that moves it.
 | Pipeline | `AGENT_MODULE=agent_realtime` — speech-to-speech (`gpt-realtime`, voice `marin`) |
 | Phone | `+918071581496` via Vobiz → trunk `ST_xZhVG8X6KYPR` → rule `SDR_cn5WSYVL2pTD` |
 | Leads | `localmama.leads` in Neon, plus ephemeral JSON on the container |
-| Knowledge | `utter.knowledge` (shared, semantic) and `localmama.businesses` (tenant, phones) |
+| Knowledge | `utter.knowledge` — one store, 120 vendors with phones (`localmama.businesses` survives for Vaani only) |
 
 **The deterministic pipeline (`agent.py`) is not deployed.** It exists, is
 tested, and is a switch away — `AGENT_MODULE=agent`. This matters constantly
@@ -117,22 +117,42 @@ wait 6.34s → 3.63s.
 
 ## Knowledge and contacts
 
-Two stores, and the distinction is load-bearing:
+One store: **`brain.py` → `utter.knowledge`**, scoped `localmama/localmama`,
+120 rows, every one with a phone, a category and curated keywords. Phones used
+to live in a separate `localmama.businesses` table, which meant two stores and
+two matching strategies; `scripts/backfill_brain_phones.py` copied them across.
+That table is still there because Vaani's matcher reads it directly — nothing
+in Local Mama does, so the two can drift and nothing will say so.
 
-- **`brain.py` → `utter.knowledge`** — shared, semantic, answers "who does this
-  kind of work". Floor of `BRAIN_MIN_SCORE=0.35` because hybrid retrieval always
-  returns its best rows however bad: "fix my geyser" surfaced a tutoring service
-  at 0.22. Queried with the *canonical* service, since cross-lingual similarity
-  scores far lower (0.28 vs 0.63 for the same rows).
-- **`directory.py` → `localmama.businesses`** — tenant-owned, 120 rows, every
-  one with a phone. Matching is **literal**: a caller asking "what is X's
-  number?" wants an exact record, and the nearest semantic neighbour with a real
-  phone attached would send them to a stranger.
+Two lookups, and **both are literal — neither embeds**:
+
+- **`find_business(name)`** — a caller asking "what is X's number?" wants an
+  exact record. Ordered exact → prefix → substring. Semantic search matched
+  "electrician" to Elecsyn Energy, an EV charging company, at 0.59, because the
+  words look alike; that is a stranger's number read out to a caller.
+- **`matches_for_service(service)`** — who actually does this work, for the
+  WhatsApp options line. Category hits win outright over keyword hits, or
+  "cleaning" returns a dental clinic on the strength of "teeth cleaning".
+  Requires a phone: a name the caller cannot ring is a teaser, not an answer.
+
+**Finding nothing is a valid outcome.** There is no electrician in the
+catalogue, so the template falls back to "our team is shortlisting", which is
+true, rather than naming a business that is wrong.
 
 A **category** is not a business: "wash" or "tutors" asks which business they
 mean, by name, and never reads out a list — that would volunteer vendors.
 Categories were tidied 59 → 50 (`scripts/tidy_categories.py`, dry run by
-default).
+default). Tidying fixed spellings, not misfilings: Equibillbook is still filed
+under `Car Wash` and 100Marketeers under `Tutors`, and a category hit is
+trusted outright, so those two are answered confidently and wrongly.
+
+`BRAIN_MIN_SCORE=0.35` and the embedding model are **inert on the call path.**
+`retrieve()` still exists and still needs that floor if anything calls it —
+hybrid retrieval returns its best rows however bad, and "fix my geyser"
+surfaced a tutoring service at 0.22 — but nothing does. Taking it off the call
+path is also what stopped a ~500MB model cold-loading mid-conversation: one
+call spent 12.43s on a single turn waiting for it, and the job process grew
+760MB past the memory warning.
 
 ---
 
