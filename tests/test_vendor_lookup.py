@@ -1,17 +1,20 @@
-"""Vendor contact lookup — the business directory, not the brain.
+"""Vendor contact lookup, against the brain as the single source of truth.
 
-The distinction is the point. `brain.py` does semantic search over shared
-knowledge and carries no phone numbers for these rows; this reads the
-tenant-owned `localmama.businesses`, where all 120 rows have one. A caller
-asking "what is X's number?" wants an exact record — the nearest semantic
-neighbour with a real phone attached would send them to a stranger.
+The phones used to live in a separate tenant table, which meant two stores and
+two matching strategies. They are now backfilled onto `utter.knowledge`, which
+always had `phone`, `city`, `kind` and `keywords` columns for exactly this.
+
+What did NOT change is that lookups for a name are **literal**. Semantic search
+matched "electrician" to an EV charging company at 0.59 — the words look alike —
+so a caller asking for a number would have been sent to a stranger. Embeddings
+answer "who does this kind of work"; they must not answer "what is X's number".
 """
 
 from __future__ import annotations
 
 import pytest
 
-from backend.app.services.directory import Business
+from backend.app.services.brain import Hit, spoken_phone
 
 
 @pytest.mark.parametrize(
@@ -24,35 +27,36 @@ from backend.app.services.directory import Business
     ],
 )
 def test_phone_is_spoken_in_groups(raw: str, expected: str) -> None:
-    assert Business("X", "cat", raw).spoken_phone() == expected
+    assert spoken_phone(raw) == expected
 
 
 def test_unusual_phone_is_passed_through_unchanged() -> None:
     """Better to read an odd number verbatim than to mangle it into groups."""
-    assert Business("X", "cat", "1800-123").spoken_phone() == "1800-123"
+    assert spoken_phone("1800-123") == "1800-123"
 
 
-def test_directory_is_disabled_without_a_database() -> None:
+def test_lookup_is_disabled_without_a_database() -> None:
     """conftest blanks DATABASE_URL, so this is the no-config path."""
-    from backend.app.services import directory
+    from backend.app.services import brain
 
-    assert directory.available() is False
-    assert directory.find("Mechanic4Me") == []
+    assert brain.available() is False
+    assert brain.find_business("Mechanic4Me") == []
+    assert brain.matches_for_service("plumber") == []
 
 
 @pytest.mark.asyncio
 async def test_tool_refuses_to_guess_when_nothing_matches(monkeypatch) -> None:
     """The failure that matters: inventing a number sends a caller to a stranger."""
     from backend.app import realtime_tools
-    from backend.app.services import directory
+    from backend.app.services import brain
 
-    monkeypatch.setattr(directory, "available", lambda: True)
-    monkeypatch.setattr(directory, "categories", lambda: set())
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "categories", lambda: set())
 
     async def none_found(name, limit=5):
         return []
 
-    monkeypatch.setattr(directory, "find_async", none_found)
+    monkeypatch.setattr(brain, "find_business_async", none_found)
     tools = {t.info.name: t for t in realtime_tools.LeadRecorder().build_tools()}
     reply = await tools["lookup_vendor_contact"](business="Brimmies Cafe")
     assert "not guess" in reply.lower()
@@ -67,10 +71,10 @@ async def test_a_category_asks_for_a_business_name(monkeypatch) -> None:
     would volunteer vendors the caller never asked about.
     """
     from backend.app import realtime_tools
-    from backend.app.services import directory
+    from backend.app.services import brain
 
-    monkeypatch.setattr(directory, "available", lambda: True)
-    monkeypatch.setattr(directory, "categories", lambda: {"car wash", "dry cleaning"})
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "categories", lambda: {"car wash", "dry cleaning"})
     tools = {t.info.name: t for t in realtime_tools.LeadRecorder().build_tools()}
 
     reply = await tools["lookup_vendor_contact"](business="wash")
@@ -82,16 +86,16 @@ async def test_a_category_asks_for_a_business_name(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_ambiguous_name_asks_without_reading_the_list(monkeypatch) -> None:
     from backend.app import realtime_tools
-    from backend.app.services import directory
+    from backend.app.services import brain
 
-    monkeypatch.setattr(directory, "available", lambda: True)
-    monkeypatch.setattr(directory, "categories", lambda: set())
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "categories", lambda: set())
 
     async def several(name, limit=5):
-        return [Business("Speed Auto", "Automobiles", "9007068682"),
-                Business("Speed Auto Service", "Automobiles", "9007066682")]
+        return [Hit(3, "Speed Auto", "", "Automobiles", None, "9007068682"),
+                Hit(4, "Speed Auto Service", "", "Automobiles", None, "9007066682")]
 
-    monkeypatch.setattr(directory, "find_async", several)
+    monkeypatch.setattr(brain, "find_business_async", several)
     tools = {t.info.name: t for t in realtime_tools.LeadRecorder().build_tools()}
     reply = await tools["lookup_vendor_contact"](business="Speed")
     assert "full name" in reply.lower()
@@ -103,16 +107,16 @@ async def test_ambiguous_name_asks_without_reading_the_list(monkeypatch) -> None
 async def test_an_exact_name_beats_the_other_matches(monkeypatch) -> None:
     """"WOW Wash" must answer about WOW Wash, not ask which "wash" they meant."""
     from backend.app import realtime_tools
-    from backend.app.services import directory
+    from backend.app.services import brain
 
-    monkeypatch.setattr(directory, "available", lambda: True)
-    monkeypatch.setattr(directory, "categories", lambda: set())
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "categories", lambda: set())
 
     async def exact_plus_noise(name, limit=5):
-        return [Business("WOW Wash", "Dry Cleaning", "6290925201"),
-                Business("The Laundryhub", "Dry Cleaning", "8886100061")]
+        return [Hit(1, "WOW Wash", "", "Dry Cleaning", None, "6290925201"),
+                Hit(5, "The Laundryhub", "", "Dry Cleaning", None, "8886100061")]
 
-    monkeypatch.setattr(directory, "find_async", exact_plus_noise)
+    monkeypatch.setattr(brain, "find_business_async", exact_plus_noise)
     tools = {t.info.name: t for t in realtime_tools.LeadRecorder().build_tools()}
     reply = await tools["lookup_vendor_contact"](business="WOW Wash")
     assert "62909 25201" in reply
@@ -121,15 +125,15 @@ async def test_an_exact_name_beats_the_other_matches(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_a_listing_without_a_phone_says_so(monkeypatch) -> None:
     from backend.app import realtime_tools
-    from backend.app.services import directory
+    from backend.app.services import brain
 
-    monkeypatch.setattr(directory, "available", lambda: True)
-    monkeypatch.setattr(directory, "categories", lambda: set())
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "categories", lambda: set())
 
     async def no_phone(name, limit=5):
-        return [Business("Quiet Co", "Events", None)]
+        return [Hit(6, "Quiet Co", "", "Events", None, None)]
 
-    monkeypatch.setattr(directory, "find_async", no_phone)
+    monkeypatch.setattr(brain, "find_business_async", no_phone)
     tools = {t.info.name: t for t in realtime_tools.LeadRecorder().build_tools()}
     reply = await tools["lookup_vendor_contact"](business="Quiet Co")
     assert "not available" in reply.lower()
@@ -147,7 +151,65 @@ async def test_a_listing_without_a_phone_says_so(monkeypatch) -> None:
     ],
 )
 def test_category_detection(monkeypatch, query: str, is_category: bool) -> None:
-    from backend.app.services import directory
+    from backend.app.services import brain
 
-    monkeypatch.setattr(directory, "categories", lambda: {"car wash", "dry cleaning"})
-    assert directory.looks_like_a_category(query) is is_category
+    monkeypatch.setattr(brain, "categories", lambda: {"car wash", "dry cleaning"})
+    assert brain.looks_like_a_category(query) is is_category
+
+
+# --- the WhatsApp options line ----------------------------------------
+
+
+def test_options_line_carries_the_numbers() -> None:
+    """A name alone is a teaser. The number is the point of the message —
+    {{4}} used to read "Elecsyn Energy" with nothing to ring."""
+    from backend.app.services.brain import options_line
+
+    line = options_line([
+        Hit(1, "Infinity Enterprises", "", "Plumbing", None, "9330998918"),
+        Hit(2, "Clean Mates", "", "House Cleaning", None, "9147019147"),
+    ])
+    assert line == "Infinity Enterprises 93309 98918 · Clean Mates 91470 19147"
+
+
+def test_options_line_drops_entries_with_no_number() -> None:
+    from backend.app.services.brain import options_line
+
+    line = options_line([
+        Hit(1, "Has Phone", "", "cat", None, "9330998918"),
+        Hit(2, "No Phone", "", "cat", None, None),
+    ])
+    assert line == "Has Phone 93309 98918"
+
+
+def test_options_line_is_empty_when_nothing_matches() -> None:
+    """Empty means the template falls back to "our team is shortlisting", which
+    is true. Naming a business we do not have is not."""
+    from backend.app.services.brain import options_line
+
+    assert options_line([]) == ""
+
+
+def test_a_category_match_wins_over_a_keyword_match() -> None:
+    """"cleaning" returned a dental clinic: "teeth cleaning" is a fair keyword
+    for a dentist and a terrible answer for someone wanting a house cleaned."""
+    import inspect
+
+    from backend.app.services import brain
+
+    source = inspect.getsource(brain.matches_for_service)
+    assert "by_category" in source
+    assert "category" in source.lower()
+
+
+def test_service_matching_never_uses_embeddings() -> None:
+    """Semantic search matched "electrician" to an EV charging company at 0.59.
+    Anything we read out to a caller is matched literally."""
+    import inspect
+
+    from backend.app.services import brain
+
+    for fn in (brain.matches_for_service, brain.find_business):
+        source = inspect.getsource(fn)
+        assert "_embed" not in source, f"{fn.__name__} must not embed"
+        assert "embedding <=>" not in source
