@@ -213,3 +213,39 @@ def test_an_abandoned_call_still_closes_the_record(rec):
     assert ended.status is CallStatus.ABANDONED
     # No read-back happened, which is not the same as the caller disagreeing.
     assert ended.confirmed is None
+
+
+# --- the order is a default, not a gate -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_service_can_be_recorded_before_anything_else(rec):
+    """A caller said "I need a plumber" 3.9 seconds in, before the greeting had
+    finished. The flow threw it away and asked again 38 seconds later, on a
+    moment of the line so bad that the transcriber emitted Telugu on a Tamil
+    call and the model heard "electrician".
+
+    The prompt now tells the model to record what it hears when it hears it.
+    Nothing in the tools may stand in the way of that."""
+    t = tools(rec)
+    reply = await t["set_service"](service="plumber")
+
+    assert rec.session.captured[CapturedField.SERVICE] == "plumber"
+    assert "service=plumber" in reply
+    # And the model is told it no longer needs to ask.
+    assert "STILL NEEDED: language, name, city" in reply
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_order_call_still_saves(rec):
+    """Captured backwards, and complete is still complete."""
+    t = tools(rec)
+    await t["set_city"](city="Chennai")
+    await t["set_service"](service="plumber")
+    await t["set_name"](name="Panikumar")
+    await t["set_language"](language="tamil")
+    rec.note_agent_speech("So that's a plumber in Chennai for Panikumar?")
+    rec.note_caller_speech("ஆமா")
+
+    assert "saved" in (await t["save_lead"]()).lower()
+    assert rec.session.confirmed is True
