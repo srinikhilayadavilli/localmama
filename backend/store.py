@@ -122,7 +122,7 @@ def get_lead(call_id: str) -> dict | None:
         cur.execute(
             "SELECT call_id, caller_phone, dialled, language, raw, name, service,"
             " city, status, confirmed, confidence, needs_review, vendors,"
-            " whatsapp_status, transcript, started_at, ended_at"
+            " asked_vendors, whatsapp_status, transcript, started_at, ended_at"
             " FROM localmama.leads WHERE call_id = %s",
             (call_id,),
         )
@@ -131,8 +131,43 @@ def get_lead(call_id: str) -> dict | None:
         return None
     cols = ["call_id", "caller_phone", "dialled", "language", "raw", "name",
             "service", "city", "status", "confirmed", "confidence", "needs_review",
-            "vendors", "whatsapp_status", "transcript", "started_at", "ended_at"]
+            "vendors", "asked_vendors", "whatsapp_status", "transcript",
+            "started_at", "ended_at"]
     return dict(zip(cols, row))
+
+
+def record_asked_vendor(call_id: str, title: str, phone: str,
+                        category: str | None = None) -> None:
+    """Remember a business the caller asked about by name. Never raises.
+
+    Appended rather than overwritten — a caller may ask about several — and
+    deduplicated on title, because asking twice is one business, not two.
+
+    Creates the lead row if the lookup somehow beats `call.started`. The write
+    happens after the response has gone back to the agent, so it costs the
+    caller nothing: they are waiting on the number, not on us filing it.
+    """
+    try:
+        with db.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO localmama.leads (call_id, agent_id, asked_vendors)"
+                    " VALUES (%s, %s, %s)"
+                    " ON CONFLICT (call_id) DO UPDATE SET"
+                    "   asked_vendors = ("
+                    "     SELECT jsonb_agg(DISTINCT v) FROM jsonb_array_elements("
+                    "       localmama.leads.asked_vendors || EXCLUDED.asked_vendors"
+                    "     ) AS v"
+                    "   ),"
+                    "   updated_at = now()",
+                    (call_id, settings.brain_agent_id,
+                     Jsonb([{"title": title, "phone": phone, "category": category}])),
+                )
+            conn.commit()
+        logger.info("call %s asked about %r", call_id[:8], title)
+    except Exception as exc:  # noqa: BLE001 - the caller already has the number
+        logger.warning("could not record the business %s asked about: %s",
+                       call_id[:8], exc)
 
 
 def mark_whatsapp(call_id: str, ok: bool, error: str = "") -> None:

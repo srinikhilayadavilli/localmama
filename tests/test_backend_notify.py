@@ -142,3 +142,77 @@ async def test_a_shaky_name_still_gets_a_message(monkeypatch, sent):
 
     await pipeline.process("c1")
     assert len(sent) == 1
+
+
+# --- businesses the caller asked for by name ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_business_asked_for_by_name_leads_the_message(monkeypatch, sent):
+    """They named it. Whatever we matched off the service is a suggestion
+    beside that, so it comes second."""
+    store = FakeStore(_lead(
+        raw={"language": "english", "name": "Ravi", "service": "plumber",
+             "city": "Hyderabad"},
+        _heard=["Ravi", "plumber", "Hyderabad"],
+        asked_vendors=[{"title": "Brimmies Cafe", "phone": "+919876543210"}],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+    monkeypatch.setattr(pipeline.brain, "matches_for_service", lambda *a, **k: [])
+
+    await pipeline.process("c1")
+
+    assert len(sent) == 1
+    assert "Brimmies Cafe" in sent[0]["options"]
+    assert sent[0]["service"] == "plumber"      # the service is still the subject
+
+
+@pytest.mark.asyncio
+async def test_a_business_carries_the_message_with_no_service(monkeypatch, sent):
+    """Someone who only wants a number may never answer the service question.
+    Refusing to write down the one thing they asked for is backwards, so the
+    business name becomes what the message is about."""
+    store = FakeStore(_lead(
+        raw={"language": "english", "name": "Ravi"},
+        _heard=["Ravi"],
+        asked_vendors=[{"title": "Brimmies Cafe", "phone": "+919876543210"}],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+
+    assert len(sent) == 1
+    assert sent[0]["service"] == "Brimmies Cafe"
+    assert "Brimmies Cafe" in sent[0]["options"]
+
+
+@pytest.mark.asyncio
+async def test_a_business_survives_an_unverifiable_service(monkeypatch, sent):
+    """The business matched the catalogue by name, which is evidence
+    independent of whatever the service decoded to."""
+    store = FakeStore(_lead(
+        raw={"language": "tamil", "name": "பணிகுமார்",
+             "service": "இலெக்ட்ரீஷியன்", "city": "சென்னை"},
+        _heard=["என்னோட பெயர் பணிகுமார்", "సరఫరా చేయనో"],
+        asked_vendors=[{"title": "Clean Mates", "phone": "+919876543210"}],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+
+    assert len(sent) == 1
+    assert sent[0]["service"] == "Clean Mates"
+
+
+@pytest.mark.asyncio
+async def test_a_business_with_no_phone_is_not_listed(monkeypatch, sent):
+    """A name without a number is a teaser, not an answer."""
+    store = FakeStore(_lead(
+        raw={"language": "english", "name": "Ravi"},
+        _heard=["Ravi"],
+        asked_vendors=[{"title": "Brimmies Cafe", "phone": None}],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+    assert sent == []

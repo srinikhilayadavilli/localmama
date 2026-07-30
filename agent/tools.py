@@ -374,6 +374,7 @@ class Recorder:
                 business,
                 s.captured.get(CapturedField.CITY),
                 s.language or Language.ENGLISH,
+                call_id=s.call_id,
             )
             logger.info("call=%s  vendor lookup %r -> %s",
                         s.short(), business[:40], reply.match.value)

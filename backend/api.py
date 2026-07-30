@@ -166,13 +166,23 @@ async def _process(call_id: str) -> None:
 
 @app.get("/v1/vendors", dependencies=[Depends(authorise)])
 async def get_vendor(
-    name: str, city: str | None = None, language: Language = Language.ENGLISH
+    background: BackgroundTasks,
+    name: str,
+    city: str | None = None,
+    language: Language = Language.ENGLISH,
+    call_id: str | None = None,
 ) -> VendorReply:
     """The only call a caller waits on. Answers with a line to speak.
 
     The agent gets prose, not a record: digit grouping, and the decision that a
     match is too weak to read out, are directory policy and belong on the side
     that owns the directory.
+
+    `call_id` ties the question to the call. Without it this endpoint answered
+    and forgot, so a business the caller explicitly asked about never reached
+    their WhatsApp — the one thing they actually wanted was the one thing left
+    out. Recorded in the background, after the reply has gone: they are waiting
+    on the number, not on us filing it.
     """
     if not brain.available():
         return VendorReply(
@@ -227,6 +237,14 @@ async def get_vendor(
             match=MatchKind.NONE,
             say=f"I have {hit.title} listed, but no phone number for them.",
             instruction="Offer to have the team follow up.",
+        )
+
+    # Only an exact hit is recorded. An approximate one is still a question —
+    # the agent has to name it back and ask before any number is read — and a
+    # category or an ambiguous match names no business at all.
+    if call_id:
+        background.add_task(
+            store.record_asked_vendor, call_id, hit.title, hit.phone, hit.category
         )
 
     return VendorReply(

@@ -176,12 +176,17 @@ class EventQueue:
 
 
 async def lookup_vendor(
-    name: str, city: str | None, language: Language
+    name: str, city: str | None, language: Language, call_id: str = ""
 ) -> VendorReply:
     """Ask the directory about a business. Never raises.
 
     Degrades to an honest "I can't look that up" — a caller told that can ask
     for something else, while a caller listening to silence hangs up.
+
+    `call_id` ties the question to the call so the business reaches their
+    WhatsApp too. A number read aloud on a phone line is easily lost; the one
+    they explicitly asked for is the last thing that should be missing from
+    the written handoff.
     """
     unavailable = VendorReply(
         match=MatchKind.NONE,
@@ -194,7 +199,8 @@ async def lookup_vendor(
         async with httpx.AsyncClient(timeout=VENDOR_TIMEOUT) as client:
             res = await client.get(
                 f"{settings.backend_url}/v1/vendors",
-                params={"name": name, "city": city or "", "language": language.value},
+                params={"name": name, "city": city or "",
+                        "language": language.value, "call_id": call_id},
                 headers=_headers(),
             )
         res.raise_for_status()

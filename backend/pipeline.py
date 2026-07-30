@@ -176,6 +176,45 @@ def audit(
     return confidence, bool(reasons), "; ".join(reasons)
 
 
+def _what_the_message_is_about(
+    english: dict, confidence: dict, asked: list[dict]
+) -> tuple[str | None, str]:
+    """What goes in the template's {{2}}, or why nothing is sent.
+
+    Returns (subject, skip_reason). A skip reason is truthy only when the
+    message should not go out at all.
+
+    Normally the subject is the service — "here are some plumber options in
+    Hyderabad". Two things change that:
+
+      * **A business the caller asked for by name carries the message on its
+        own.** Someone who only wants the number for Brimmies Cafe may never
+        answer the service question, and refusing to write down the one thing
+        they asked for would be exactly backwards. The business name becomes
+        the subject.
+
+      * **A service the audit cannot vouch for does not.** A caller asked for
+        a plumber on a bad line, the model heard "electrician", and the
+        message told them about electricians. Naming the wrong trade is worse
+        than saying nothing — unless they also named a business, which is
+        verified independently of whatever the service decoded to.
+    """
+    service = english.get("service")
+    score = confidence.get(CapturedField.SERVICE.value, {})
+    unverified = (
+        score.get("evidence")
+        and score.get("score", 1.0) < settings.review_threshold
+    )
+
+    if service and not unverified:
+        return service, ""
+    if asked:
+        return asked[0]["title"], ""
+    if not service:
+        return None, "incomplete lead"
+    return None, "service unverified"
+
+
 async def process(call_id: str) -> dict | None:
     """Run the whole pipeline for one finished call. Never raises.
 
@@ -206,13 +245,19 @@ async def process(call_id: str) -> dict | None:
         unread = "never read back" if lead.get("confirmed") is None else "caller disagreed"
         reason = f"{reason}; {unread}" if reason else unread
 
-    vendors = []
+    # Businesses the caller asked for by name lead the list. They named them;
+    # whatever we matched off the service is a suggestion beside that.
+    asked = [v for v in (lead.get("asked_vendors") or []) if v.get("phone")]
+
+    matched = []
     if english["service"]:
         hits = brain.matches_for_service(english["service"], city=english["city"])
-        vendors = [
+        matched = [
             {"title": h.title, "phone": h.phone, "category": h.category, "city": h.city}
             for h in hits if h.phone
         ]
+    seen = {v["title"] for v in asked}
+    vendors = asked + [v for v in matched if v["title"] not in seen]
 
     store.upsert_call(
         call_id,
@@ -221,56 +266,34 @@ async def process(call_id: str) -> dict | None:
         review_reason=reason or None, vendors=_json(vendors),
         processed_at=_now(),
     )
-    # Nothing is sent for a lead with no service.
-    #
-    # The template reads "here are some {service} options in {city}", and with
-    # those fields empty it goes out as "here are some the service options in
-    # your area" — to a caller who only picked a language before hanging up.
-    # A real one of those reached a real phone. The lead is still stored and
-    # still worth a human following up; it is the automatic message that has
-    # nothing to say.
-    if not english["service"]:
-        logger.info("call %s has no service; storing the lead but sending nothing",
-                    call_id[:8])
-        store.mark_whatsapp(call_id, False, "incomplete lead")
-        return store.get_lead(call_id)
 
-    # Nothing is sent when the audit cannot vouch for the service itself.
-    #
-    # The message is *about* the service — "here are some electrician options".
-    # A caller asked for a plumber on a bad line; STT produced Telugu on a
-    # Tamil call, the model heard "electrician", and both this score and the
-    # city's came back 0.00. The lead was correctly flagged, and the message
-    # went out anyway telling them about electricians.
-    #
-    # Naming the wrong trade to a customer is worse than saying nothing. The
-    # lead is stored, flagged, and waiting for a human — which is what
-    # `needs_review` is for. Only the service gates this: a shaky name still
-    # produces a useful message, and a shaky city only widens the search.
-    service_score = confidence.get(CapturedField.SERVICE.value, {})
-    if service_score.get("evidence") and service_score.get("score", 1.0) < settings.review_threshold:
-        logger.warning(
-            "call %s: service %r scored %.2f — not messaging the caller about a "
-            "trade we cannot verify they asked for",
-            call_id[:8], english["service"], service_score.get("score", 0.0),
-        )
-        store.mark_whatsapp(call_id, False, "service unverified")
+    subject, skip = _what_the_message_is_about(english, confidence, asked)
+    if skip:
+        logger.info("call %s: %s — storing the lead, sending nothing",
+                    call_id[:8], skip)
+        store.mark_whatsapp(call_id, False, skip)
         return store.get_lead(call_id)
 
     logger.info(
         "processed %s: %s / %s / %s — %d vendor(s)%s",
-        call_id[:8], english["name"], english["service"], english["city"],
+        call_id[:8], english["name"], subject, english["city"],
         len(vendors), f"  REVIEW: {reason}" if needs_review else "",
     )
 
-    await notify(call_id, lead.get("caller_phone"), english, vendors)
+    await notify(call_id, lead.get("caller_phone"), english, vendors, subject)
     return store.get_lead(call_id)
 
 
 async def notify(
-    call_id: str, phone: str | None, english: dict, vendors: list[dict]
+    call_id: str, phone: str | None, english: dict, vendors: list[dict],
+    subject: str,
 ) -> None:
-    """Hand the lead off over WhatsApp and record what happened."""
+    """Hand the lead off over WhatsApp and record what happened.
+
+    `subject` fills the template's {{2}} — usually the service, but the name of
+    a business when that is what the caller asked for. See
+    `_what_the_message_is_about`.
+    """
     if not phone:
         store.mark_whatsapp(call_id, False, "no phone")
         return
@@ -281,7 +304,7 @@ async def notify(
     result = await whatsapp.send(
         phone,
         name=english.get("name"),
-        service=english.get("service"),
+        service=subject,
         city=english.get("city"),
         options=options,
     )
