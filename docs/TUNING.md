@@ -265,10 +265,10 @@ shortly after.
 
 ## Known limits
 
-- **WhatsApp cannot send.** CampaignBot resets every connection from every
-  network tested, including their own website. Credentials and payload are
-  correct and verified; the moment they are reachable it works with no
-  redeploy.
+CampaignBot was unreachable 2026-07-28 to ~2026-07-30 and that outage is over —
+confirmed 2026-07-31 by live sends from the deployed backend. `whatsapp_status`
+on the lead row is the signal to trust, not this file.
+
 - **Indic languages are anglicised**, per the voice section above.
 - **Question order and the read-back are asked for, not enforced.**
   `save_lead` refuses while a mandatory field is missing, which stops a call

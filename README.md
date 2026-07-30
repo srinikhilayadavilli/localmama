@@ -238,12 +238,6 @@ ask things out of order or skip the read-back and nothing stops it.
 declared finished early — but that is a weaker guarantee than the state machine
 gave.
 
-**WhatsApp cannot send.** CampaignBot resets every connection from every
-network tested, including their own website. Credentials and payload are
-correct and verified; the moment they are reachable it works with no redeploy.
-Owed leads accumulate in the outbox and are swept every
-`OUTBOX_SWEEP_SECONDS`.
-
 **Indic languages are anglicised.** `gpt-realtime` generates its own audio and
 none of its voices is natively Indic — the accent comes from the prompt. Native
 Indic speech needs a TTS path with Sarvam's bulbul voices, which costs the
