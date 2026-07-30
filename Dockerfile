@@ -17,8 +17,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY agent/requirements.txt agent/requirements.txt
-RUN pip install --upgrade pip && pip install -r agent/requirements.txt
+COPY requirements.txt requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # Shared with the backend, and imported as a top-level package by both.
 COPY contract/ contract/

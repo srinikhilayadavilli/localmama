@@ -1,5 +1,10 @@
 # Local Mama voice agent — deployed to LiveKit.
 #
+# At the repo root, not under agent/, because `lk agent deploy` detects a
+# Python project by a root manifest and does not follow `-r` includes. The
+# root Dockerfile builds the agent too, so root == the LiveKit deployable.
+# The backend keeps its own pins in backend/requirements.txt.
+#
 # Four things. No database driver, no Sarvam, no WhatsApp, no embedding model:
 # this process talks, and everything it learns leaves over HTTP.
 #

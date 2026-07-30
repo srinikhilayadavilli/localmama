@@ -20,7 +20,7 @@ help:
 setup:
 	$(PY) -m venv .venv
 	$(BIN)/pip install --upgrade pip
-	$(BIN)/pip install -r agent/requirements.txt -r backend/requirements.txt -r requirements-dev.txt
+	$(BIN)/pip install -r requirements.txt -r backend/requirements.txt -r requirements-dev.txt
 	@test -f .env || cp .env.example .env
 
 test:
