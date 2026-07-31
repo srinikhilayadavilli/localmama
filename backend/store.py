@@ -170,7 +170,8 @@ def record_asked_vendor(call_id: str, title: str, phone: str,
                        call_id[:8], exc)
 
 
-def mark_whatsapp(call_id: str, ok: bool, error: str = "") -> None:
+def mark_whatsapp(call_id: str, ok: bool, error: str = "",
+                  message_id: str = "") -> None:
     """Record the outcome of a handoff attempt. Never raises.
 
     `sent` is terminal. `pending` means it is still owed and will be retried;
@@ -187,9 +188,10 @@ def mark_whatsapp(call_id: str, ok: bool, error: str = "") -> None:
                 cur.execute(
                     "UPDATE localmama.leads SET whatsapp_status = %s,"
                     " whatsapp_attempts = whatsapp_attempts + 1,"
-                    " whatsapp_error = %s, whatsapp_at = now(), updated_at = now()"
+                    " whatsapp_error = %s, whatsapp_message_id = %s,"
+                    " whatsapp_at = now(), updated_at = now()"
                     " WHERE call_id = %s",
-                    (status, error or None, call_id),
+                    (status, error or None, message_id or None, call_id),
                 )
             conn.commit()
     except Exception as exc:  # noqa: BLE001 - the lead is already stored

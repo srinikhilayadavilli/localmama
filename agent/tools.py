@@ -48,6 +48,7 @@ from contract import (
     CallStatus,
     CapturedField,
     Language,
+    MatchKind,
 )
 
 from .backend_client import EventQueue, lookup_vendor
@@ -134,6 +135,12 @@ class CallSession:
     #: A language change asked for once but not yet confirmed by the caller.
     pending_language: Language | None = None
 
+    #: Businesses the caller asked for by name and got a number for. One of
+    #: these IS what they wanted, so it stands in for the service: a caller
+    #: ringing for Pax Jwellers' number should not then be asked what trade
+    #: they are after. They already said.
+    found_businesses: list = field(default_factory=list)
+
     transcript: list = field(default_factory=list)
     turn_gaps: list[float] = field(default_factory=list)
     _seq: int = 0
@@ -146,7 +153,10 @@ class CallSession:
         return self._seq
 
     def missing(self) -> list[CapturedField]:
-        return [f for f in MANDATORY if not self.captured.get(f)]
+        needed = [f for f in MANDATORY if not self.captured.get(f)]
+        if self.found_businesses and CapturedField.SERVICE in needed:
+            needed.remove(CapturedField.SERVICE)
+        return needed
 
     def state_line(self) -> str:
         """Everything held so far, appended to every tool result.
@@ -155,9 +165,10 @@ class CallSession:
         structurally hard: the last tool result in context always lists what is
         held and what is outstanding.
         """
-        held = ", ".join(
-            f"{_SPOKEN[f]}={v}" for f, v in self.captured.items() if v
-        ) or "nothing yet"
+        parts = [f"{_SPOKEN[f]}={v}" for f, v in self.captured.items() if v]
+        if self.found_businesses:
+            parts.append("asked about=" + ", ".join(self.found_businesses))
+        held = ", ".join(parts) or "nothing yet"
         missing = self.missing()
         need = (
             ", ".join(_SPOKEN[f] for f in missing) if missing
@@ -384,6 +395,15 @@ class Recorder:
             )
             logger.info("call=%s  vendor lookup %r -> %s",
                         s.short(), business[:40], reply.match.value)
+            if reply.match is MatchKind.EXACT and reply.phone and reply.title:
+                # What they rang for. It stands in for the service, so the
+                # flow stops asking what trade they want — they told us by
+                # naming the business.
+                if reply.title not in s.found_businesses:
+                    s.found_businesses.append(reply.title)
+                return (f"{reply.say} {reply.instruction} "
+                        f"Do NOT ask what service they need — this business is "
+                        f"what they asked for.").strip() + s.state_line()
             return f"{reply.say} {reply.instruction}".strip()
 
         @function_tool(

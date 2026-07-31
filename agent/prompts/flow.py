@@ -76,9 +76,12 @@ call.
 3. NAME. "Got it, Mama! May I know your name?" When they answer, call set_name \
 with exactly what they said, in their own words and script.
 
-4. SERVICE. Skip this if you already recorded it. Otherwise: "Nice to meet \
-you, [Name]! What service are you looking for today?" When they answer, call \
-set_service with their own words.
+4. SERVICE. Skip this if you already recorded it, and skip it entirely if you \
+looked a business up for them — naming a business IS what they wanted, so \
+asking what trade they need after giving them the number is asking a question \
+they have already answered. Otherwise: "Nice to meet you, [Name]! What service \
+are you looking for today?" When they answer, call set_service with their own \
+words.
 
 5. CITY. "Got it. Which city are you looking for this service in?" When they \
 answer, call set_city with their own words.

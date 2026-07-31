@@ -249,3 +249,56 @@ async def test_an_out_of_order_call_still_saves(rec):
 
     assert "saved" in (await t["save_lead"]()).lower()
     assert rec.session.confirmed is True
+
+
+# --- a business asked for stands in for the service ------------------------
+
+
+class _Reply:
+    def __init__(self, match, title=None, phone=None):
+        self.match, self.title, self.phone = match, title, phone
+        self.say, self.instruction = f"{title} — 98363 18445", "Read it clearly."
+
+
+@pytest.mark.asyncio
+async def test_a_found_business_removes_the_service_question(rec, monkeypatch):
+    """A caller rang for Pax Jwellers' number, got it, and was then asked what
+    trade they needed — a question they had already answered by naming the
+    business. save_lead required a service, so the model had to keep asking."""
+    from agent import tools as tools_mod
+    from contract import MatchKind
+
+    async def _found(*a, **k):
+        return _Reply(MatchKind.EXACT, "Pax Jwellers", "9836318445")
+
+    monkeypatch.setattr(tools_mod, "lookup_vendor", _found)
+    t = tools(rec)
+    await t["set_language"](language="hindi")
+    await t["set_name"](name="Ravi")
+
+    assert CapturedField.SERVICE in rec.session.missing()
+    reply = await t["lookup_vendor_contact"](business="Pax")
+    assert CapturedField.SERVICE not in rec.session.missing()
+    assert "Do NOT ask what service" in reply
+    assert "asked about=Pax Jwellers" in reply
+
+    await t["set_city"](city="Kolkata")
+    rec.note_agent_speech("So that's Pax Jwellers in Kolkata for Ravi?")
+    rec.note_caller_speech("haan")
+    assert "saved" in (await t["save_lead"]()).lower()
+
+
+@pytest.mark.asyncio
+async def test_a_weak_lookup_does_not_stand_in_for_the_service(rec, monkeypatch):
+    """An approximate hit is still a question, and a category names no
+    business. Neither is what the caller asked for."""
+    from agent import tools as tools_mod
+    from contract import MatchKind
+
+    async def _vague(*a, **k):
+        return _Reply(MatchKind.APPROXIMATE, "Pax Jwellers")
+
+    monkeypatch.setattr(tools_mod, "lookup_vendor", _vague)
+    t = tools(rec)
+    await t["lookup_vendor_contact"](business="Pax Jewellers")
+    assert CapturedField.SERVICE in rec.session.missing()

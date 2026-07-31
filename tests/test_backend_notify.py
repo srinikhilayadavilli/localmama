@@ -31,7 +31,7 @@ class FakeStore:
     def upsert_call(self, call_id, **fields):
         self.updates.append(fields)
 
-    def mark_whatsapp(self, call_id, ok, error=""):
+    def mark_whatsapp(self, call_id, ok, error="", message_id=""):
         self.marks.append((ok, error))
 
 

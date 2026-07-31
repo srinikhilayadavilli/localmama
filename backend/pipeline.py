@@ -312,6 +312,7 @@ async def notify(
         call_id,
         bool(result.get("ok")),
         str(result.get("reason") or result.get("error") or ""),
+        message_id=str(result.get("messageId") or ""),
     )
 
 
