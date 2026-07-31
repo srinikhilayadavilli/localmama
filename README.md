@@ -253,6 +253,9 @@ spec.
 
 ---
 
+The agent's responsibilities and the shape of one call are in
+**[docs/AGENT.md](docs/AGENT.md)**.
+
 Measured findings and the reasoning behind specific values are in
 **[docs/TUNING.md](docs/TUNING.md)**. Read it before changing a timing value,
 a threshold, or the voice.
