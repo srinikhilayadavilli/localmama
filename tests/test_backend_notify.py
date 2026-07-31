@@ -117,6 +117,7 @@ async def test_an_unverifiable_service_is_not_messaged_about(monkeypatch, sent):
 
     Naming the wrong trade to a customer is worse than saying nothing."""
     store = FakeStore(_lead(
+        confirmed=None,                     # the read-back never got an answer
         raw={"language": "tamil", "name": "பணிகுமார்",
              "service": "இலெக்ட்ரீஷியன்", "city": "சென்னை"},
         _heard=["என்னோட பெயர் பணிகுமார்", "సరఫరా చేయనో", "பெனமெய்ல்"],
@@ -127,6 +128,35 @@ async def test_an_unverifiable_service_is_not_messaged_about(monkeypatch, sent):
 
     assert sent == []
     assert store.marks == [(False, "service unverified")]
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_read_back_beats_a_garbled_transcript(monkeypatch, sent):
+    """This suppressed two good leads. A caller said "plumber" and the
+    transcriber wrote "अप्पिरंबर"; another said "సలూన్ కాడ్ బ్యూటీ" and the model
+    heard "beautician". Both times the model was right and the transcript was
+    garbage — and the audit, which can only see that the two disagree, threw
+    the lead away.
+
+    A read-back the caller answered is better evidence than a second decode of
+    the same bad audio."""
+    store = FakeStore(_lead(
+        confirmed=True,                     # they heard it and said yes
+        raw={"language": "english", "name": "Sree Nikhila",
+             "service": "plumber", "city": "Mangalore"},
+        _heard=["English", "My name is Sree Nikhila", "अप्पिरंबर", "Mangalore"],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    class H:
+        title, phone, category, city = "Infinity Enterprises", "+91", "Plumbing", None
+
+    monkeypatch.setattr(pipeline.brain, "matches_for_service", lambda q, **k: [H()])
+
+    await pipeline.process("c1")
+
+    assert len(sent) == 1
+    assert "Infinity Enterprises" in sent[0]["options"]
 
 
 @pytest.mark.asyncio
@@ -191,6 +221,7 @@ async def test_a_business_survives_an_unverifiable_service(monkeypatch, sent):
     """The business matched the catalogue by name, which is evidence
     independent of whatever the service decoded to."""
     store = FakeStore(_lead(
+        confirmed=None,
         raw={"language": "tamil", "name": "பணிகுமார்",
              "service": "இலெக்ட்ரீஷியன்", "city": "சென்னை"},
         _heard=["என்னோட பெயர் பணிகுமார்", "సరఫరా చేయనో"],

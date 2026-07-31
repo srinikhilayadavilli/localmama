@@ -207,6 +207,12 @@ def claim_owed_handoffs(limit: int = 50, stale_after_minutes: int = 10) -> list[
     than merely read: one `UPDATE ... RETURNING` moves them from `pending` to
     `sending`, and Postgres decides who wins.
 
+    Only *processed* leads are owed anything. `pending` is also the column
+    default, so a lead the pipeline never reached looks identical to one whose
+    send failed — and the sweep took a call that captured nothing at all and
+    messaged the caller "here are some the service options in your area",
+    bypassing every guard in the pipeline because the pipeline had not run.
+
     A claim that is never resolved — the process died mid-send — would strand
     the lead in `sending` forever, so anything stuck there longer than
     `stale_after_minutes` is treated as owed again. That risks a duplicate in
@@ -222,6 +228,7 @@ def claim_owed_handoffs(limit: int = 50, stale_after_minutes: int = 10) -> list[
                     " WHERE call_id IN ("
                     "   SELECT call_id FROM localmama.leads"
                     "   WHERE agent_id = %s AND caller_phone IS NOT NULL"
+                    "     AND processed_at IS NOT NULL AND service IS NOT NULL"
                     "     AND whatsapp_attempts < %s"
                     "     AND (whatsapp_status = 'pending'"
                     "          OR (whatsapp_status = 'sending'"

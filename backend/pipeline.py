@@ -195,7 +195,7 @@ def audit(
 
 
 def _what_the_message_is_about(
-    english: dict, confidence: dict, asked: list[dict]
+    english: dict, confidence: dict, asked: list[dict], confirmed: bool = False
 ) -> tuple[str | None, str]:
     """What goes in the template's {{2}}, or why nothing is sent.
 
@@ -222,6 +222,20 @@ def _what_the_message_is_about(
     unverified = (
         score.get("evidence")
         and score.get("score", 1.0) < settings.review_threshold
+        # …unless the caller heard it read back and agreed.
+        #
+        # This suppressed two good leads. A caller said "plumber" and the
+        # transcriber wrote "अप्पिरंबर"; another said "సలూన్ కాడ్ బ్యూటీ" and
+        # the model heard "beautician". Both times the model was right, the
+        # transcript was garbage, and the audit — which can only see that the
+        # two disagree — threw the lead away.
+        #
+        # A read-back the caller answered is better evidence than a second
+        # decode of the same bad audio: they heard the trade said out loud in
+        # their own language and said yes. `confirmed` now means a caller turn
+        # followed the read-back, so it cannot be claimed by a model that read
+        # back and saved in the same breath.
+        and not confirmed
     )
 
     if service and not unverified:
@@ -323,7 +337,9 @@ async def process(call_id: str) -> dict | None:
         processed_at=_now(),
     )
 
-    subject, skip = _what_the_message_is_about(english, confidence, asked)
+    subject, skip = _what_the_message_is_about(
+        english, confidence, asked, confirmed=lead.get('confirmed') is True
+    )
     if skip:
         logger.info("call %s: %s — storing the lead, sending nothing",
                     call_id[:8], skip)
