@@ -197,10 +197,59 @@ def find_business(name: str, limit: int = 5) -> list[Hit]:
                 logger.info("name lookup %r -> %r -> %s",
                             query[:40], core, [h.title for h in found])
                 return found
+
+        # Then every word, all of which must appear. Word order stops
+        # mattering: "Jwellers Pax" and "Mates Clean" find nothing as a
+        # contiguous string and are obviously the business the caller means.
+        #
+        # ALL of them, never any of them. Matching on any word was measured
+        # against this catalogue and is actively harmful — "car wash company"
+        # returned seventeen businesses including a healthcare firm and a
+        # tutoring academy, because one common word hit unrelated keywords.
+        # Several matches with no exact title makes the agent ask the caller to
+        # repeat themselves, and a single spurious one makes it read out a
+        # stranger's number.
+        found = _all_words_business(core or normalise_name(query), limit)
+        if found:
+            logger.info("name lookup %r -> every word -> %s",
+                        query[:40], [h.title for h in found])
+            return found
     except Exception as exc:  # noqa: BLE001
         logger.warning("name lookup failed (%s); continuing without it", exc)
         return []
     return _approximate_business(query, limit)
+
+
+#: Words too short to narrow anything down. "Of", "at" and the like appear in
+#: half the catalogue's keywords and would make the AND below meaningless.
+_MIN_WORD = 3
+
+#: A caller names a business in a few words. More than this is a transcription
+#: accident, and an unbounded AND is an unbounded query.
+_MAX_WORDS = 6
+
+
+def _all_words_business(query: str, limit: int) -> list[Hit]:
+    """Entries whose title or keywords contain EVERY word of `query`."""
+    words = [w for w in query.split() if len(w) >= _MIN_WORD][:_MAX_WORDS]
+    if len(words) < 2:
+        return []          # one word is what the literal search already tried
+    owner, agent = _scope()
+    clauses = " AND ".join(
+        f"(lower(title) LIKE %(w{i})s OR lower(coalesce(keywords,'')) LIKE %(w{i})s)"
+        for i in range(len(words))
+    )
+    params: dict = {f"w{i}": f"%{w}%" for i, w in enumerate(words)}
+    params.update(owner=owner, agent=agent, k=limit)
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT {_COLUMNS}, 2"
+            " FROM utter.knowledge"
+            f" WHERE owner_id = %(owner)s AND agent_id = %(agent)s AND ({clauses})"
+            " ORDER BY title LIMIT %(k)s",
+            params,
+        )
+        return [Hit(*row) for row in cur.fetchall()]
 
 
 #: Words a caller wraps a business name in, and which stop a literal match

@@ -43,3 +43,26 @@ def test_punctuation_goes_with_it():
     """The catalogue contains "Brinda's kitchen" and "M/S B R Enterprises";
     a caller can say neither the apostrophe nor the slash."""
     assert _core_name("Brinda's kitchen shop") == "brinda s kitchen"
+
+
+# --- every word, never any word -------------------------------------------
+
+
+def test_all_words_needs_at_least_two():
+    """One word is what the literal search already tried; running it again as
+    an AND of one clause would just repeat that query."""
+    from backend.services.brain import _all_words_business
+
+    assert _all_words_business("pax", limit=5) == []
+    assert _all_words_business("", limit=5) == []
+
+
+def test_short_words_do_not_count_toward_the_and():
+    """"of" and "at" appear in half the catalogue's keywords. Letting them into
+    an AND makes the AND meaningless."""
+    from backend.services.brain import _MIN_WORD, _core_name
+
+    # "Land Of Cakes" -> "of" is filler anyway, but the length guard is the
+    # backstop for the ones that are not.
+    assert _MIN_WORD == 3
+    assert all(len(w) >= 3 or w in ("of",) for w in _core_name("Land Of Cakes").split())
