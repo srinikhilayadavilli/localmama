@@ -129,3 +129,31 @@ def test_a_query_of_pure_filler_names_no_trade():
 
     assert _service_core("service near me") == ""
     assert _service_core("I need some service please") == ""
+
+
+def test_a_word_the_catalogue_never_heard_of_is_dropped(monkeypatch):
+    """A caller said "necessity of parlour". "of" was filler and "parlour" was
+    real, but "necessity" survived, went into the AND, and matched nothing — so
+    a query that named the trade exactly returned nothing at all.
+
+    A word appearing in no category and no keyword cannot contribute to a
+    match. Requiring it guarantees zero rows; dropping it cannot invent one.
+    That is the general form of the filler list, and it covers every phrasing
+    nobody thought to add: "requirement of plumber", "kindly arrange one
+    carpenter", "urgent need of electrician"."""
+    from backend.services import brain
+
+    monkeypatch.setattr(brain, "vocabulary",
+                        lambda force=False: {"parlour", "plumber", "beauty"})
+    assert brain._known_words("necessity of parlour") == "parlour"
+    assert brain._known_words("requirement of plumber") == "plumber"
+    assert brain._known_words("beauty parlour") == "beauty parlour"
+
+
+def test_dropping_unknown_words_cannot_empty_a_real_query(monkeypatch):
+    """With no vocabulary to check against — an unreachable database — the
+    query is passed through untouched rather than silently emptied."""
+    from backend.services import brain
+
+    monkeypatch.setattr(brain, "vocabulary", lambda force=False: set())
+    assert brain._known_words("beauty parlour") == "beauty parlour"

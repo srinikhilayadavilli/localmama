@@ -459,6 +459,30 @@ _SERVICE_FILLER = frozenset({
 
 
 
+def _known_words(text: str) -> str:
+    """Only the words this catalogue has ever heard of.
+
+    A word that appears in no category and no keyword cannot contribute to a
+    match — requiring it in an AND guarantees zero rows. Dropping it therefore
+    costs nothing and cannot introduce a false hit, while it rescues every
+    phrasing nobody thought to put in a filler list.
+
+    A caller said "necessity of parlour". "of" was filler and "parlour" was
+    real, but "necessity" survived, went into the AND, and matched nothing —
+    so a query that named the trade exactly returned nothing. Indian English
+    is full of these: "requirement of plumber", "urgent need of electrician",
+    "kindly arrange one carpenter".
+
+    This is the general form of the filler list, and the list stays because it
+    strips words the catalogue *does* contain — "service" is in Speed
+    Kawasaki's keywords, so only an explicit rule can remove it.
+    """
+    known = vocabulary()
+    if not known:
+        return normalise_name(text)
+    return " ".join(w for w in normalise_name(text).split() if w in known)
+
+
 def _service_core(text: str) -> str:
     """A service phrase reduced to the trade in it.
 
@@ -586,6 +610,15 @@ def matches_for_service(
             rows = _service_rows(core, city)
             if rows:
                 logger.info("service match %r -> %r (core)", query[:40], core)
+
+        # Then with the words the catalogue has never heard of removed. They
+        # can only ever drive an AND to zero, so keeping them loses matches and
+        # dropping them cannot invent one.
+        known = _known_words(core)
+        if not rows and known and known != core:
+            rows = _service_rows(known, city) or _service_rows_all_words(known, city)
+            if rows:
+                logger.info("service match %r -> %r (known words)", query[:40], known)
 
         # Then every word of it, all of which must appear.
         if not rows and core:
