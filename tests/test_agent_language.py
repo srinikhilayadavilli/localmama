@@ -62,3 +62,41 @@ def test_the_accent_block_covers_every_language():
     block = realtime_accent_instructions()
     for language in Language:
         assert language.value.capitalize() in block
+
+
+# --- the accent, which is prompt-only on a speech-to-speech model ----------
+
+
+def test_the_greeting_carries_the_accent_itself():
+    """`generate_reply` takes its own instruction, and that is what the model
+    is most immediately steered by — the system prompt's accent block is two
+    thousand tokens away and there is no conversation yet to set a voice from.
+
+    Asking only for "greet the caller" produced a greeting in the model's
+    default American, on the one turn that sets the caller's expectation for
+    the whole call."""
+    from agent.prompts.voice_style import GREETING_INSTRUCTION
+
+    lowered = GREETING_INSTRUCTION.lower()
+    assert "indian english" in lowered
+    for excluded in ("american", "british", "neutral"):
+        assert excluded in lowered, f"{excluded} must be named to be excluded"
+
+
+def test_the_accent_is_anchored_before_the_workflow_not_only_after_it():
+    """It used to appear first at 67% through the prompt. The model's opening
+    tokens saw nothing about how to sound."""
+    from agent.prompts.flow import instructions
+
+    text = instructions()
+    first = text.lower().find("indian english")
+    assert 0 <= first < 400, f"accent first mentioned at char {first}"
+
+
+def test_every_language_still_carries_the_indian_accent():
+    """Switching to Telugu must not switch to a Telugu-accented American."""
+    from agent.prompts.voice_style import realtime_accent_instructions
+
+    block = realtime_accent_instructions().lower()
+    assert "native indian" in block
+    assert "never drift" in block

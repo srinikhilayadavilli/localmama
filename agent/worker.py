@@ -34,7 +34,7 @@ from .backend_client import EventQueue
 from .config import settings, startup_problems
 from .logger import get_logger, setup_logging
 from .prompts.flow import instructions
-from .prompts.voice_style import GREETING_STT_PROMPT
+from .prompts.voice_style import GREETING_INSTRUCTION, GREETING_STT_PROMPT
 from .tools import Recorder
 
 logger = get_logger("localmama.agent")
@@ -225,7 +225,7 @@ async def run_session(ctx: JobContext, participant) -> None:  # noqa: ANN001
     # generate_reply entirely, so there the caller has to speak first.
     try:
         _t1 = time.monotonic()
-        await session.generate_reply(instructions="Greet the caller and begin.")
+        await session.generate_reply(instructions=GREETING_INSTRUCTION)
         logger.info("greeting took %.2fs", time.monotonic() - _t1)
     except Exception as exc:  # noqa: BLE001
         logger.warning(

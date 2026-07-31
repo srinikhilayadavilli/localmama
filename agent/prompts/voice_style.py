@@ -118,6 +118,26 @@ def realtime_accent_instructions() -> str:
     )
 
 
+#: What the greeting is generated from.
+#:
+#: `generate_reply` takes its own instruction, and that instruction is what the
+#: model is most immediately steered by — the system prompt's accent block is
+#: two thousand tokens away and the conversation has no history yet to set a
+#: voice from. Asking only for "greet the caller" got a greeting in the model's
+#: default American, on the one turn that sets the caller's expectation for the
+#: whole call.
+#:
+#: So the accent travels with the request. Short, because it competes with
+#: nothing else here, and blunt for the same reason.
+GREETING_INSTRUCTION = (
+    "Greet the caller and begin. Speak in a NATIVE INDIAN ENGLISH accent from "
+    "the very first syllable — the warm, clear English of a Hyderabad or "
+    "Bangalore call centre. Syllable-timed rhythm with equal weight on each "
+    "syllable, retroflex t and d, unaspirated p/t/k, full unreduced vowels. "
+    "NOT American, NOT British, NOT neutral. This first sentence sets the "
+    "accent for the entire call, so it is the one that matters most."
+)
+
 #: Before the caller has picked a language: no language is asserted, so the
 #: model is free to auto-detect, but the vocabulary bias still applies.
 GREETING_STT_PROMPT = (
