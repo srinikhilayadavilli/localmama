@@ -228,7 +228,8 @@ def claim_owed_handoffs(limit: int = 50, stale_after_minutes: int = 10) -> list[
                     "   ORDER BY created_at"
                     "   FOR UPDATE SKIP LOCKED"
                     "   LIMIT %s)"
-                    " RETURNING call_id, caller_phone, name, service, city, language,"
+                    " RETURNING call_id, caller_phone, name,"
+                    "           coalesce(service_said, service), city, language,"
                     "           vendors, whatsapp_attempts",
                     (settings.brain_agent_id, settings.outbox_max_attempts,
                      stale_after_minutes, limit),

@@ -60,7 +60,9 @@ async def normalise(raw: dict[str, str]) -> dict[str, str | None]:
     service = raw.get(CapturedField.SERVICE.value)
     city = raw.get(CapturedField.CITY.value)
 
-    out: dict[str, str | None] = {"name": None, "service": None, "city": None}
+    out: dict[str, str | None] = {
+        "name": None, "service": None, "service_said": None, "city": None,
+    }
 
     if name:
         # The rule extractor first: it strips "मेरा नाम X है" down to X, so what
@@ -73,14 +75,23 @@ async def normalise(raw: dict[str, str]) -> dict[str, str | None]:
         # A trade the catalogue already knows is canonical in every language it
         # lists, in which case this costs nothing — there is no non-Latin text
         # left to send.
-        english = await translate.english_service(found.requested_service or service)
+        # Two values, deliberately.
+        #
+        # `service` is canonical, because matching needs one label per trade —
+        # "beauty parlor" has to become `salon` to reach the salons.
+        #
+        # `service_said` is the caller's own phrasing, translated but not
+        # canonicalised. The message is read by the person who made the call,
+        # and "here are some salon options" to someone who asked for a beauty
+        # parlour reads as though nobody was listening.
+        canonical = await translate.english_service(found.requested_service or service)
+        spoken = await translate.english_service(service)
         # Into Indian English, at the point the value is made rather than each
         # time it is matched. Sarvam targets en-IN and still returns American
         # forms — "beauty parlor", "jewelry store" — and this catalogue, like
-        # the callers, is written in Indian English. Fixing it here means the
-        # stored lead and the WhatsApp message read the way an Indian customer
-        # expects, not only that the match happens to work.
-        out["service"] = brain.anglicise(english) or english
+        # the callers, is written in Indian English.
+        out["service"] = brain.anglicise(canonical) or canonical
+        out["service_said"] = brain.anglicise(spoken) or spoken or out["service"]
 
     if city:
         found = extract(city, expecting=FOR_FIELD[CapturedField.CITY])
@@ -214,7 +225,9 @@ def _what_the_message_is_about(
     )
 
     if service and not unverified:
-        return service, ""
+        # What the caller called it, falling back to the canonical label when
+        # there is nothing else. The message is for them to read.
+        return english.get("service_said") or service, ""
     if asked:
         return asked[0]["title"], ""
     if not service:
@@ -268,7 +281,8 @@ async def process(call_id: str) -> dict | None:
 
     store.upsert_call(
         call_id,
-        name=english["name"], service=english["service"], city=english["city"],
+        name=english["name"], service=english["service"],
+        service_said=english.get("service_said"), city=english["city"],
         confidence=_json(confidence), needs_review=needs_review,
         review_reason=reason or None, vendors=_json(vendors),
         processed_at=_now(),

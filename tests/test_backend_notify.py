@@ -216,3 +216,24 @@ async def test_a_business_with_no_phone_is_not_listed(monkeypatch, sent):
 
     await pipeline.process("c1")
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_the_message_says_what_the_caller_said(monkeypatch, sent):
+    """The template's {{2}}. A caller asked for a "beauty parlor" and the
+    message read "here are some salon options" — matched correctly, worded as
+    though nobody had listened."""
+    store = FakeStore(_lead(
+        raw={"language": "english", "name": "Raja", "service": "beauty parlor",
+             "city": "Kolkata"},
+        _heard=["Raja", "beauty parlor", "Kolkata"],
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+
+    assert len(sent) == 1
+    assert "parlo" in sent[0]["service"].lower()
+    assert sent[0]["service"].lower() != "salon"
+    # …while the lead still stores the canonical label, which is what matched.
+    assert store.updates[-1]["service"] == "salon"

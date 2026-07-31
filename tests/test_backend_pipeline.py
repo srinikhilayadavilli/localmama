@@ -48,7 +48,20 @@ async def test_a_service_reaches_a_canonical_trade():
 @pytest.mark.asyncio
 async def test_nothing_captured_normalises_to_nothing():
     out = await normalise({})
-    assert out == {"name": None, "service": None, "city": None}
+    assert out == {
+        "name": None, "service": None, "service_said": None, "city": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_callers_own_words_are_kept_alongside_the_canonical_trade():
+    """Matching needs one label per trade, so "beauty parlor" becomes `salon`
+    and reaches the salons. But the message is read by the person who made the
+    call, and "here are some salon options" to someone who asked for a beauty
+    parlour reads as though nobody was listening."""
+    out = await normalise({"service": "beauty parlor"})
+    assert out["service"] == "salon"                    # what we match on
+    assert "parlo" in out["service_said"].lower()       # what they read
 
 
 # --- the audit: a score, not a gate ---------------------------------------
