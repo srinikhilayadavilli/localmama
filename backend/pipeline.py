@@ -73,7 +73,14 @@ async def normalise(raw: dict[str, str]) -> dict[str, str | None]:
         # A trade the catalogue already knows is canonical in every language it
         # lists, in which case this costs nothing — there is no non-Latin text
         # left to send.
-        out["service"] = await translate.english_service(found.requested_service or service)
+        english = await translate.english_service(found.requested_service or service)
+        # Into Indian English, at the point the value is made rather than each
+        # time it is matched. Sarvam targets en-IN and still returns American
+        # forms — "beauty parlor", "jewelry store" — and this catalogue, like
+        # the callers, is written in Indian English. Fixing it here means the
+        # stored lead and the WhatsApp message read the way an Indian customer
+        # expects, not only that the match happens to work.
+        out["service"] = brain.anglicise(english) or english
 
     if city:
         found = extract(city, expecting=FOR_FIELD[CapturedField.CITY])

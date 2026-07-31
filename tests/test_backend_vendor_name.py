@@ -71,16 +71,42 @@ def test_short_words_do_not_count_toward_the_and():
 # --- matching a service ----------------------------------------------------
 
 
-def test_american_spellings_reach_the_british_catalogue():
-    """Sarvam translates to American forms and this catalogue is British. A
-    caller asking for a "beauty parlor" was told we had nobody, while two were
-    listed under "beauty parlour"."""
-    from backend.services.brain import _anglicise
+def test_spelling_variants_are_generated_not_listed():
+    """Sarvam targets en-IN and still returns American forms. A caller asking
+    for a "beauty parlor" was told we had nobody, while two were listed under
+    "beauty parlour".
 
-    assert _anglicise("beauty parlor") == "beauty parlour"
-    assert _anglicise("Jewelry Store") == "jewellery store"
-    assert _anglicise("diagnostic center") == "diagnostic centre"
-    assert _anglicise("plumbing") == "plumbing"          # untouched
+    The variants are generated from suffix rules rather than a hand-kept list,
+    which is what makes this cover words nobody thought to add."""
+    from backend.services.brain import _variants
+
+    assert "parlour" in _variants("parlor")
+    assert "jewellery" in _variants("jewelry")
+    assert "centre" in _variants("center")
+    assert "catalogue" in _variants("catalog")
+    assert "traveller" in _variants("traveler")
+
+
+def test_a_generated_variant_is_only_used_if_the_catalogue_has_it(monkeypatch):
+    """The rules are deliberately over-generous — they turn "doctor" into
+    "doctour" and "motor" into "motour". That is safe only because every
+    candidate is checked against the catalogue's own vocabulary first, so a
+    nonsense variant matches nothing and is discarded."""
+    from backend.services import brain
+
+    monkeypatch.setattr(brain, "vocabulary",
+                        lambda force=False: {"parlour", "doctor", "motor"})
+    assert brain.anglicise("beauty parlor") == "beauty parlour"
+    assert brain.anglicise("doctor") == "doctor"      # not doctour
+    assert brain.anglicise("motor") == "motor"        # not motour
+
+
+def test_an_unknown_word_is_left_alone(monkeypatch):
+    from backend.services import brain
+
+    monkeypatch.setattr(brain, "vocabulary", lambda force=False: {"plumbing"})
+    assert brain.anglicise("plumbing") == "plumbing"
+    assert brain.anglicise("zzzz") == "zzzz"
 
 
 def test_the_word_service_is_stripped_from_a_service_query():

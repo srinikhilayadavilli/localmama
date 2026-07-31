@@ -345,18 +345,102 @@ def _approximate_business(query: str, limit: int) -> list[Hit]:
 # ---------------------------------------------------------------------------
 
 
-#: American spellings a translator produces, against the British ones this
-#: catalogue is written in. Every pair here has cost a real match: a caller
-#: asking for a "beauty parlor" was told we had nobody, while the catalogue
-#: held two under "beauty parlour".
-_SPELLING = {
-    "parlor": "parlour", "parlors": "parlours",
-    "jewelry": "jewellery", "jewelery": "jewellery",
-    "center": "centre", "centers": "centres",
-    "theater": "theatre", "catalog": "catalogue",
-    "traveler": "traveller", "labor": "labour", "color": "colour",
+#: Every word the catalogue actually uses, from categories and keywords.
+#: Cached alongside the category list and refreshed on the same clock.
+_VOCAB: set[str] = set()
+_vocab_at: float = 0.0
+
+
+def vocabulary(force: bool = False) -> set[str]:
+    """The words this catalogue is written in.
+
+    Spelling correction is generated rather than listed (see `_variants`), and
+    a generated variant is only trusted if it appears here. That is what makes
+    guessing safe: a wrong guess matches nothing and costs nothing.
+    """
+    global _VOCAB, _vocab_at
+    if not available():
+        return set()
+    if not force and _VOCAB and (time.monotonic() - _vocab_at) < _CATEGORY_TTL:
+        return _VOCAB
+    try:
+        owner, agent = _scope()
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT lower(coalesce(category,'') || ' ' || coalesce(keywords,''))"
+                " FROM utter.knowledge WHERE owner_id = %s AND agent_id = %s",
+                (owner, agent),
+            )
+            words: set[str] = set()
+            for (blob,) in cur.fetchall():
+                words.update(w for w in normalise_name(blob).split() if w)
+        _VOCAB, _vocab_at = words, time.monotonic()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read the catalogue vocabulary: %s", exc)
+    return _VOCAB
+
+
+#: How American and Indian/British English differ, as transformations rather
+#: than a word list. Applied in both directions, because a caller may say
+#: either and the catalogue may be written in either.
+#:
+#: These are deliberately over-generous — "doctor" -> "doctour" is nonsense and
+#: "motor" -> "motour" worse. It does not matter: every candidate is checked
+#: against `vocabulary()` before it is used, so a nonsense variant matches
+#: nothing and is discarded. Generating and filtering beats maintaining a list
+#: that is always one word short of the call you just lost.
+_SPELLING_RULES: tuple[tuple[str, str], ...] = (
+    ("or", "our"),      # parlor/parlour, color/colour, labor/labour
+    ("er", "re"),       # center/centre, theater/theatre, meter/metre
+    ("ize", "ise"),     # organize/organise, specialize/specialise
+    ("yze", "yse"),     # analyze/analyse
+    ("og", "ogue"),     # catalog/catalogue, dialog/dialogue
+    ("ler", "ller"),    # traveler/traveller, jeweler/jeweller
+    ("lry", "llery"),   # jewelry/jewellery
+    ("se", "ce"),       # defense/defence, license/licence
+    ("ense", "ence"),
+    ("ll", "l"),        # enrollment/enrolment
+)
+
+#: Whole-word pairs no suffix rule reaches.
+_SPELLING_WORDS: dict[str, str] = {
     "tire": "tyre", "tires": "tyres", "aluminum": "aluminium",
+    "gray": "grey", "mold": "mould", "plow": "plough",
+    "pajamas": "pyjamas", "mustache": "moustache", "check": "cheque",
 }
+
+
+def _variants(word: str) -> list[str]:
+    """Plausible other-spellings of one word. Unfiltered; the caller filters."""
+    out = []
+    for src, dst in list(_SPELLING_WORDS.items()) + [
+        (v, k) for k, v in _SPELLING_WORDS.items()
+    ]:
+        if word == src:
+            out.append(dst)
+    for a, b in _SPELLING_RULES:
+        if word.endswith(a):
+            out.append(word[: -len(a)] + b)
+        if word.endswith(b):
+            out.append(word[: -len(b)] + a)
+    return out
+
+
+def anglicise(text: str) -> str:
+    """`text` respelled into whatever spelling the catalogue actually uses.
+
+    A word already in the catalogue is left alone. One that is not gets its
+    variants generated and the first that the catalogue does contain wins.
+    """
+    known = vocabulary()
+    out = []
+    for word in normalise_name(text).split():
+        if word in known:
+            out.append(word)
+            continue
+        out.append(next((v for v in _variants(word) if v in known), word))
+    return " ".join(out)
+
 
 #: Words that make a phrase a request rather than a trade. "service" leads the
 #: list because it is the one that did damage: a motorcycle dealer carries the
@@ -373,12 +457,6 @@ _SERVICE_FILLER = frozenset({
     "could", "would", "get", "find", "help", "there", "hi", "hello",
 })
 
-
-def _anglicise(text: str) -> str:
-    """A query in the catalogue's spelling."""
-    return " ".join(
-        _SPELLING.get(w, w) for w in normalise_name(text).split()
-    )
 
 
 def _service_core(text: str) -> str:
@@ -491,7 +569,7 @@ def matches_for_service(
         # found nothing, while "beauty parlour" found two. `closest_category`
         # was supposed to bridge that, and cannot — "beauty parlor" against
         # "beauty & personal care" is nowhere near the 0.75 cutoff.
-        spelled = _anglicise(query)
+        spelled = anglicise(query)
         if not rows and spelled != query.lower():
             rows = _service_rows(spelled, city)
             if rows:
