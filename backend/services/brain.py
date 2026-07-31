@@ -345,6 +345,121 @@ def _approximate_business(query: str, limit: int) -> list[Hit]:
 # ---------------------------------------------------------------------------
 
 
+#: American spellings a translator produces, against the British ones this
+#: catalogue is written in. Every pair here has cost a real match: a caller
+#: asking for a "beauty parlor" was told we had nobody, while the catalogue
+#: held two under "beauty parlour".
+_SPELLING = {
+    "parlor": "parlour", "parlors": "parlours",
+    "jewelry": "jewellery", "jewelery": "jewellery",
+    "center": "centre", "centers": "centres",
+    "theater": "theatre", "catalog": "catalogue",
+    "traveler": "traveller", "labor": "labour", "color": "colour",
+    "tire": "tyre", "tires": "tyres", "aluminum": "aluminium",
+}
+
+#: Words that make a phrase a request rather than a trade. "service" leads the
+#: list because it is the one that did damage: a motorcycle dealer carries the
+#: keywords "car service, bike service", so every query containing the word
+#: matched it.
+_SERVICE_FILLER = frozenset({
+    "service", "services", "servicing", "wala", "walla",
+    "near", "nearby", "me", "my", "our", "in", "at", "for", "of",
+    "the", "a", "an", "some", "any", "please", "need", "needed",
+    "want", "wanted", "looking", "require", "required", "guy", "guys",
+    "person", "people", "work", "job",
+    # Whatever a caller wraps the request in. "I need a plumber" is a plumber.
+    "i", "we", "us", "you", "is", "am", "are", "do", "does", "can",
+    "could", "would", "get", "find", "help", "there", "hi", "hello",
+})
+
+
+def _anglicise(text: str) -> str:
+    """A query in the catalogue's spelling."""
+    return " ".join(
+        _SPELLING.get(w, w) for w in normalise_name(text).split()
+    )
+
+
+def _service_core(text: str) -> str:
+    """A service phrase reduced to the trade in it.
+
+    Empty when nothing is left — "service near me" names no trade, and
+    searching on the remains would match anything.
+    """
+    return " ".join(
+        w for w in normalise_name(text).split() if w not in _SERVICE_FILLER
+    )
+
+
+def _service_rows(query: str, city: str | None) -> list[Hit]:
+    """Listings with a phone whose category or keywords contain `query`."""
+    owner, agent = _scope()
+    where = [
+        "owner_id = %(owner)s", "agent_id = %(agent)s", "phone IS NOT NULL",
+        "(lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
+        " OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')",
+    ]
+    params: dict = {"q": query, "owner": owner, "agent": agent}
+    _add_city(where, params, city)
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT {_COLUMNS},"
+            "  CASE WHEN lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
+            "       THEN 0 ELSE 1 END AS rank"
+            " FROM utter.knowledge"
+            f" WHERE {' AND '.join(where)}"
+            " ORDER BY rank, title",
+            params,
+        )
+        return [Hit(*row) for row in cur.fetchall()]
+
+
+def _service_rows_all_words(query: str, city: str | None) -> list[Hit]:
+    """Listings containing EVERY word of `query`, in any order.
+
+    All of them, never any of them — for the same reason as the name lookup.
+    One common word matches unrelated keywords across half the catalogue.
+    """
+    words = [w for w in query.split() if len(w) >= _MIN_WORD][:_MAX_WORDS]
+    if len(words) < 2:
+        return []
+    owner, agent = _scope()
+    clauses = " AND ".join(
+        f"(lower(coalesce(category,'')) LIKE %(w{i})s"
+        f" OR lower(coalesce(keywords,'')) LIKE %(w{i})s)"
+        for i in range(len(words))
+    )
+    where = ["owner_id = %(owner)s", "agent_id = %(agent)s",
+             "phone IS NOT NULL", f"({clauses})"]
+    params: dict = {f"w{i}": f"%{w}%" for i, w in enumerate(words)}
+    params.update(owner=owner, agent=agent)
+    _add_city(where, params, city)
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT {_COLUMNS}, 1 FROM utter.knowledge"
+            f" WHERE {' AND '.join(where)} ORDER BY title",
+            params,
+        )
+        return [Hit(*row) for row in cur.fetchall()]
+
+
+def _add_city(where: list, params: dict, city: str | None) -> None:
+    """A hard city filter, matched either way round.
+
+    The caller gives a locality as often as a city ("Madhapur"), and the
+    listings carry cities. Listings with no city stay eligible, because most of
+    them have none and excluding them would empty the catalogue.
+    """
+    place = (city or "").strip()
+    if not place:
+        return
+    where.append("(city IS NULL OR city ILIKE %(city)s"
+                 " OR %(city_plain)s ILIKE '%%' || city || '%%')")
+    params["city"] = f"%{place}%"
+    params["city_plain"] = place
+
+
 def matches_for_service(
     service: str, limit: int = 3, *, city: str | None = None
 ) -> list[Hit]:
@@ -366,47 +481,49 @@ def matches_for_service(
     query = (service or "").strip()
     if not available() or not query:
         return []
-    owner, agent = _scope()
-    where = [
-        "owner_id = %(owner)s", "agent_id = %(agent)s", "phone IS NOT NULL",
-        "(lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
-        " OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')",
-    ]
-    params: dict = {"q": query, "owner": owner, "agent": agent}
-
-    # The caller gives a locality as often as a city ("Madhapur"), and the
-    # listings carry cities — so this matches either way round rather than
-    # requiring the two strings to be the same shape.
-    place = (city or "").strip()
-    if place:
-        where.append("(city IS NULL OR city ILIKE %(city)s"
-                     " OR %(city_plain)s ILIKE '%%' || city || '%%')")
-        params["city"] = f"%{place}%"
-        params["city_plain"] = place
 
     try:
-        with db.cursor() as cur:
-            cur.execute(
-                f"SELECT {_COLUMNS},"
-                "  CASE WHEN lower(coalesce(category,'')) LIKE '%%' || lower(%(q)s) || '%%'"
-                "       THEN 0 ELSE 1 END AS rank"
-                " FROM utter.knowledge"
-                f" WHERE {' AND '.join(where)}"
-                " ORDER BY rank, title",
-                params,
-            )
-            rows = [Hit(*row) for row in cur.fetchall()]
+        # The phrase as spoken.
+        rows = _service_rows(query, city)
+
+        # Then in the catalogue's spelling. Sarvam translates to American forms
+        # and this catalogue is British: a caller asking for a "beauty parlor"
+        # found nothing, while "beauty parlour" found two. `closest_category`
+        # was supposed to bridge that, and cannot — "beauty parlor" against
+        # "beauty & personal care" is nowhere near the 0.75 cutoff.
+        spelled = _anglicise(query)
+        if not rows and spelled != query.lower():
+            rows = _service_rows(spelled, city)
+            if rows:
+                logger.info("service match %r -> %r (spelling)", query[:40], spelled)
+
+        # Then without the words that make it a request rather than a trade.
+        #
+        # "service" is the dangerous one. Speed Kawasaki Kolkata, a motorcycle
+        # dealer, carries the keywords "car service, bike service" — so any
+        # query containing the word matched it, and a caller who asked for a
+        # beauty parlour was sent a Kawasaki showroom.
+        core = _service_core(spelled)
+        if not rows and core and core != spelled:
+            rows = _service_rows(core, city)
+            if rows:
+                logger.info("service match %r -> %r (core)", query[:40], core)
+
+        # Then every word of it, all of which must appear.
+        if not rows and core:
+            rows = _service_rows_all_words(core, city)
+            if rows:
+                logger.info("service match %r -> every word of %r", query[:40], core)
     except Exception as exc:  # noqa: BLE001
         logger.warning("service match failed (%s); continuing without it", exc)
         return []
 
-    # Nothing matched literally. Before giving up, try the nearest category by
-    # spelling: translation returns American forms ("Jewelry store") where the
-    # catalogue is British ("jewellery stores"), and a caller's phrase is rarely
-    # a category verbatim ("mobile shop" vs "mobile shops"). Deliberately the
-    # *second* attempt — a literal hit is better evidence than a close one.
+    # Nothing literal at all. The nearest category by spelling is the last
+    # resort — a caller's phrase is rarely a category verbatim ("mobile shop"
+    # vs "mobile shops") — and it is deliberately last, because a literal hit
+    # is better evidence than a close one.
     if not rows:
-        nearest = closest_category(query)
+        nearest = closest_category(core or query)
         if nearest and nearest != query:
             logger.info("no literal match for %r; trying category %r", query[:40], nearest)
             return matches_for_service(nearest, limit, city=city)

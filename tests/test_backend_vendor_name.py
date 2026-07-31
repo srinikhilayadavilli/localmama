@@ -66,3 +66,40 @@ def test_short_words_do_not_count_toward_the_and():
     # backstop for the ones that are not.
     assert _MIN_WORD == 3
     assert all(len(w) >= 3 or w in ("of",) for w in _core_name("Land Of Cakes").split())
+
+
+# --- matching a service ----------------------------------------------------
+
+
+def test_american_spellings_reach_the_british_catalogue():
+    """Sarvam translates to American forms and this catalogue is British. A
+    caller asking for a "beauty parlor" was told we had nobody, while two were
+    listed under "beauty parlour"."""
+    from backend.services.brain import _anglicise
+
+    assert _anglicise("beauty parlor") == "beauty parlour"
+    assert _anglicise("Jewelry Store") == "jewellery store"
+    assert _anglicise("diagnostic center") == "diagnostic centre"
+    assert _anglicise("plumbing") == "plumbing"          # untouched
+
+
+def test_the_word_service_is_stripped_from_a_service_query():
+    """The one that did damage. Speed Kawasaki Kolkata, a motorcycle dealer,
+    carries the keywords "car service, bike service" — so every query with the
+    word in it matched, and someone who asked for a beauty parlour was sent a
+    Kawasaki showroom."""
+    from backend.services.brain import _service_core
+
+    assert _service_core("beauty parlor service") == "beauty parlor"
+    assert _service_core("plumbing services") == "plumbing"
+    assert _service_core("beauty parlour service near me") == "beauty parlour"
+    assert _service_core("I need a plumber") == "plumber"
+
+
+def test_a_query_of_pure_filler_names_no_trade():
+    """"service near me" is not a trade. Searching on what is left of it would
+    match anything with a phone number."""
+    from backend.services.brain import _service_core
+
+    assert _service_core("service near me") == ""
+    assert _service_core("I need some service please") == ""
