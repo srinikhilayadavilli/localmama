@@ -71,11 +71,13 @@ class Settings:
     #: done, "high" answers sooner. Semantic rather than plain server VAD is the
     #: point on Indian calls, where speakers pause between clauses.
     #:
-    #: "high" is the setting for minimum dead air, and it is a real trade: a
-    #: caller who pauses mid-thought is more likely to be answered over. Drop
-    #: back to "auto" if people start getting cut off.
+    #: "high" was the setting for minimum dead air and the trade came due: on a
+    #: real call background noise kept starting turns, cutting Mami off and
+    #: leaving the conversation unable to move on. "auto" waits for more
+    #: evidence that someone is actually speaking. Raise it again only if calls
+    #: start feeling sluggish, and check the turn gaps when you do.
     openai_realtime_eagerness: str = field(
-        default_factory=lambda: _env("OPENAI_REALTIME_EAGERNESS", "high").lower()
+        default_factory=lambda: _env("OPENAI_REALTIME_EAGERNESS", "auto").lower()
     )
     #: "near_field" for a phone handset, "far_field" for a laptop mic.
     openai_realtime_noise_reduction: str = field(
@@ -83,6 +85,14 @@ class Settings:
     )
     openai_realtime_speed: float = field(
         default_factory=lambda: float(_env("OPENAI_REALTIME_SPEED", "1.0"))
+    )
+    #: Whether the caller can talk over Mami. On by default: someone correcting
+    #: a misheard name should not have to wait for her to finish. Turn it off
+    #: when a noisy line keeps interrupting her instead — her turns are one or
+    #: two sentences by design, so little is lost by making them uninterruptible.
+    openai_realtime_interrupt: bool = field(
+        default_factory=lambda: _env("OPENAI_REALTIME_INTERRUPT", "1").lower()
+        not in {"0", "false", "no", "off"}
     )
     #: Transcribes the caller's audio alongside the realtime model. Not for the
     #: logs: it is a second, independent decode, and the only evidence the

@@ -94,7 +94,18 @@ pronunciation rather than switching accent for them.""",
 #: model might hallucinate, so it stays short, and nothing in it is shaped like
 #: a value the tools capture. Indian names and places are recovered by the
 #: backend's rules instead, which run on real transcripts.
-_STT_VOCABULARY = "They are asking for help with a household service."
+#: Deliberately empty.
+#:
+#: It used to read "They are asking for help with a household service." — one
+#: short sentence, already trimmed once for this exact reason. It was still
+#: enough. Whisper-family models emit prompt content as transcription when fed
+#: noise or silence, and on a real call the transcript filled with invented
+#: service requests: "I want a new geyser installed" in Hindi, on a Tamil call,
+#: from a caller who said nothing at all.
+#:
+#: Those phantom turns are not harmless. They are the evidence the backend
+#: audits captured values against, so noise became corroboration.
+_STT_VOCABULARY = ""
 
 
 def realtime_accent_instructions() -> str:
@@ -143,5 +154,5 @@ GREETING_INSTRUCTION = (
 GREETING_STT_PROMPT = (
     "An Indian caller with an Indian accent, on a phone line, speaking English, "
     "Hindi, Bengali, Telugu, Tamil, or Kannada, and possibly mixing English "
-    f"words into the sentence. {_STT_VOCABULARY}"
+    "words into the sentence."
 )

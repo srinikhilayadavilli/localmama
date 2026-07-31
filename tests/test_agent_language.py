@@ -100,3 +100,20 @@ def test_every_language_still_carries_the_indian_accent():
     block = realtime_accent_instructions().lower()
     assert "native indian" in block
     assert "never drift" in block
+
+
+def test_the_stt_prompt_seeds_nothing_a_caller_could_be_credited_with():
+    """Whisper-family models emit prompt content as transcription when fed
+    noise. On a real call the transcript filled with invented service requests
+    — "I want a new geyser installed", in Hindi, on a Tamil call, from someone
+    who had said nothing — because the prompt told it callers ask about
+    household services.
+
+    Those phantom turns are the evidence the backend audits captured values
+    against, so noise was being counted as corroboration."""
+    from agent.prompts.voice_style import GREETING_STT_PROMPT
+
+    lowered = GREETING_STT_PROMPT.lower()
+    for seed in ("service", "plumber", "electrician", "geyser", "household",
+                 "repair", "cleaning", "asking for help"):
+        assert seed not in lowered, f"{seed!r} is a word the model can hallucinate"

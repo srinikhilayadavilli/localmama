@@ -53,10 +53,11 @@ def _build_openai_model():
     from openai.types.realtime import realtime_audio_input_turn_detection as turn_types
 
     logger.info(
-        "OpenAI Realtime model=%s voice=%s eagerness=%s noise_reduction=%s speed=%.2f",
+        "OpenAI Realtime model=%s voice=%s eagerness=%s noise_reduction=%s "
+        "speed=%.2f interruptible=%s",
         settings.openai_realtime_model, settings.openai_realtime_voice,
         settings.openai_realtime_eagerness, settings.openai_realtime_noise_reduction,
-        settings.openai_realtime_speed,
+        settings.openai_realtime_speed, settings.openai_realtime_interrupt,
     )
     try:
         return realtime.RealtimeModel(
@@ -71,7 +72,7 @@ def _build_openai_model():
                 type="semantic_vad",
                 eagerness=settings.openai_realtime_eagerness,
                 create_response=True,
-                interrupt_response=True,
+                interrupt_response=settings.openai_realtime_interrupt,
             ),
             input_audio_noise_reduction=settings.openai_realtime_noise_reduction,
             # A second, independent decode of the same audio the model hears.
