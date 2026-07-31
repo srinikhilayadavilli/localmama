@@ -135,6 +135,19 @@ class CallCaptured(_Event):
     #: read-back. A corrected field is better evidence, not worse, and the
     #: backend scores it accordingly.
     corrected: bool = False
+    #: For `field=service` only: the trade the agent understood, when the
+    #: caller described a problem rather than naming one.
+    #:
+    #: Callers do not think in catalogue categories. They say "my tap is
+    #: leaking", "my geyser is not working", "I want to look good for my
+    #: wedding". Matched literally those reach a plumber by luck, a co-working
+    #: space by accident, and a devotional singer by nothing at all.
+    #:
+    #: The agent is already a language model listening to the call, so reading
+    #: "plumber" out of "my tap is leaking" costs nothing and — unlike inferring
+    #: it after everyone has hung up — can be confirmed with the caller while
+    #: they are still there to disagree. `value` remains exactly what they said.
+    interpreted: str | None = None
 
 
 class TranscriptTurn(BaseModel):

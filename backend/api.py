@@ -138,6 +138,11 @@ def _apply(event, background: BackgroundTasks) -> None:  # noqa: ANN001
         # else is raw text merged into `raw`.
         if event.field.value == "language":
             store.upsert_call(event.call_id, language=event.value)
+        if event.interpreted:
+            # What the agent understood a description to mean, confirmed with
+            # the caller during the read-back. Not a captured value, so it does
+            # not go in `raw`.
+            store.upsert_call(event.call_id, service_inferred=event.interpreted)
         store.merge_raw(event.call_id, event.field, event.value)
         return
 

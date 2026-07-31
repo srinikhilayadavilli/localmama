@@ -122,7 +122,8 @@ def get_lead(call_id: str) -> dict | None:
         cur.execute(
             "SELECT call_id, caller_phone, dialled, language, raw, name, service,"
             " city, status, confirmed, confidence, needs_review, vendors,"
-            " asked_vendors, whatsapp_status, transcript, started_at, ended_at"
+            " asked_vendors, service_inferred, whatsapp_status, transcript,"
+            " started_at, ended_at"
             " FROM localmama.leads WHERE call_id = %s",
             (call_id,),
         )
@@ -131,8 +132,8 @@ def get_lead(call_id: str) -> dict | None:
         return None
     cols = ["call_id", "caller_phone", "dialled", "language", "raw", "name",
             "service", "city", "status", "confirmed", "confidence", "needs_review",
-            "vendors", "asked_vendors", "whatsapp_status", "transcript",
-            "started_at", "ended_at"]
+            "vendors", "asked_vendors", "service_inferred", "whatsapp_status",
+            "transcript", "started_at", "ended_at"]
     return dict(zip(cols, row))
 
 

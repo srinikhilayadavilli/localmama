@@ -124,6 +124,10 @@ class CallSession:
     started_mono: float = 0.0
 
     captured: dict[CapturedField, str] = field(default_factory=dict)
+    #: What a described problem was understood to mean. "my tap is leaking"
+    #: is captured verbatim and interpreted as "plumber"; the read-back
+    #: confirms the interpretation, not the sentence.
+    interpreted: dict[CapturedField, str] = field(default_factory=dict)
     language: Language | None = None
 
     #: Whether the details were read back and the caller agreed. `None` means
@@ -165,7 +169,12 @@ class CallSession:
         structurally hard: the last tool result in context always lists what is
         held and what is outstanding.
         """
-        parts = [f"{_SPOKEN[f]}={v}" for f, v in self.captured.items() if v]
+        parts = []
+        for f, v in self.captured.items():
+            if not v:
+                continue
+            trade = self.interpreted.get(f)
+            parts.append(f"{_SPOKEN[f]}={v}" + (f" (= {trade})" if trade else ""))
         if self.found_businesses:
             parts.append("asked about=" + ", ".join(self.found_businesses))
         held = ", ".join(parts) or "nothing yet"
@@ -202,15 +211,18 @@ class Recorder:
             started_at=s.started_at, agent_version=agent_version,
         ))
 
-    def _capture(self, field_: CapturedField, value: str, corrected: bool) -> None:
+    def _capture(self, field_: CapturedField, value: str, corrected: bool,
+                 interpreted: str | None = None) -> None:
         s = self.session
         s.captured[field_] = value
         self.events.send(CallCaptured(
             event_id=str(uuid.uuid4()), call_id=s.call_id, seq=s.next_seq(),
             at=self._at(), field=field_, value=value, corrected=corrected,
+            interpreted=interpreted or None,
         ))
-        logger.info("call=%s  CAPTURED %s=%r%s", s.short(), field_.value,
-                    value[:40], "  (corrected)" if corrected else "")
+        logger.info("call=%s  CAPTURED %s=%r%s%s", s.short(), field_.value,
+                    value[:40], f" -> {interpreted!r}" if interpreted else "",
+                    "  (corrected)" if corrected else "")
 
     def announce_end(self, status: CallStatus) -> None:
         s = self.session
@@ -306,12 +318,24 @@ class Recorder:
             return f"Recorded language: {resolved.value}." + s.state_line()
 
         def _setter(field_: CapturedField, noun: str):
-            async def record(value: str) -> str:
+            async def record(value: str, interpreted: str = "") -> str:
                 cleaned = sanitize_field((value or "").strip())
                 if not cleaned:
                     return f"That was empty. Ask them for their {noun} again."
+                trade = sanitize_field((interpreted or "").strip())
                 corrected = bool(s.captured.get(field_))
-                rec._capture(field_, cleaned, corrected)
+                rec._capture(field_, cleaned, corrected, interpreted=trade)
+                if trade:
+                    s.interpreted[field_] = trade
+                    # Read back the trade, not the sentence. This is a reading
+                    # of what they meant rather than a record of what they
+                    # said, and the read-back is the only moment anyone can
+                    # disagree with it.
+                    return (
+                        f"Recorded {noun}: {cleaned}, which you understand to mean "
+                        f"{trade}. When you read the details back, SAY \"{trade}\" "
+                        f"and check that is what they meant."
+                    ) + s.state_line()
                 return f"Recorded {noun}: {cleaned}." + s.state_line()
             return record
 
@@ -344,9 +368,20 @@ class Recorder:
             ),
         )
         async def set_service(
-            service: Annotated[str, "The service the caller asked for."],
+            service: Annotated[str, "The service the caller asked for, in their "
+                                    "own words and script."],
+            trade: Annotated[
+                str,
+                "Only when they described a problem instead of naming a trade — "
+                "\"my tap is leaking\", \"my geyser is not working\", \"I want to "
+                "look good for my wedding\". Give the trade they need, one or two "
+                "English words: plumber, salon, dentist, laptop repair. Leave it "
+                "empty when they named the trade themselves, and leave it empty "
+                "if you are not sure — a wrong trade sends them the wrong "
+                "businesses.",
+            ] = "",
         ) -> str:
-            return await _service(service)
+            return await _service(service, trade)
 
         @function_tool(
             name="set_city",

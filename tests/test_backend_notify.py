@@ -237,3 +237,62 @@ async def test_the_message_says_what_the_caller_said(monkeypatch, sent):
     assert sent[0]["service"].lower() != "salon"
     # …while the lead still stores the canonical label, which is what matched.
     assert store.updates[-1]["service"] == "salon"
+
+
+# --- when the caller described a problem rather than naming a trade --------
+
+
+@pytest.mark.asyncio
+async def test_the_understood_trade_is_used_when_their_words_match_nothing(
+    monkeypatch, sent
+):
+    """Callers describe: "my geyser is not working" reached a co-working space,
+    "my bike is making noise" reached a bike rental. The agent heard the call,
+    read "plumber" out of it, and said that back during the read-back — so the
+    guess was agreed to while they could still object."""
+    store = FakeStore(_lead(
+        raw={"language": "english", "name": "Raja",
+             "service": "my geyser is not working", "city": "Kolkata"},
+        _heard=["Raja", "my geyser is not working", "Kolkata"],
+        service_inferred="plumber",
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    def _match(q, **kw):
+        class H:
+            title, phone, category, city = "Infinity Enterprises", "+91", "Plumbing", None
+        return [H()] if "plumb" in q.lower() else []
+
+    monkeypatch.setattr(pipeline.brain, "matches_for_service", _match)
+
+    await pipeline.process("c1")
+
+    assert len(sent) == 1
+    assert "Infinity Enterprises" in sent[0]["options"]
+    # …and flagged, because nobody actually said "plumber".
+    assert store.updates[-1]["needs_review"] is True
+    assert "understood as" in store.updates[-1]["review_reason"]
+
+
+@pytest.mark.asyncio
+async def test_their_own_words_beat_the_interpretation(monkeypatch, sent):
+    """A literal hit on what they said is better evidence than a reading of it,
+    so the interpretation is only ever a fallback."""
+    store = FakeStore(_lead(
+        raw={"language": "english", "name": "Raja", "service": "plumber",
+             "city": "Kolkata"},
+        _heard=["Raja", "plumber", "Kolkata"],
+        service_inferred="salon",
+    ))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    class H:
+        title, phone, category, city = "Infinity Enterprises", "+91", "Plumbing", None
+
+    monkeypatch.setattr(pipeline.brain, "matches_for_service", lambda q, **k: [H()])
+
+    await pipeline.process("c1")
+
+    assert len(sent) == 1
+    # Not flagged: the match came from their own word, not the reading.
+    assert "understood as" not in (store.updates[-1].get("review_reason") or "")

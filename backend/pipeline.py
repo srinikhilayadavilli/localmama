@@ -276,8 +276,43 @@ async def process(call_id: str) -> dict | None:
             {"title": h.title, "phone": h.phone, "category": h.category, "city": h.city}
             for h in hits if h.phone
         ]
+
+    # Nothing matched what they said. Try what the agent understood them to
+    # mean, if it understood anything.
+    #
+    # Callers describe rather than classify: "my geyser is not working" reached
+    # a co-working space, "my bike is making noise" reached a bike rental, "I
+    # want to look good for my wedding" reached a devotional singer. The agent
+    # heard the call and read "plumber" out of it, and — this is the part that
+    # makes it safe rather than another guess — said that back to them during
+    # the read-back, while they could still disagree.
+    #
+    # Only ever a fallback. A literal hit on the caller's own words is better
+    # evidence than an interpretation of them, however good.
+    inferred = (lead.get("service_inferred") or "").strip()
+    inferred_used = False
+    if not matched and inferred:
+        hits = brain.matches_for_service(inferred, city=english["city"])
+        matched = [
+            {"title": h.title, "phone": h.phone, "category": h.category, "city": h.city}
+            for h in hits if h.phone
+        ]
+        if matched:
+            inferred_used = True
+            logger.info("call %s: %r found nothing; %r (understood) found %d",
+                        call_id[:8], english["service"], inferred, len(matched))
     seen = {v["title"] for v in asked}
     vendors = asked + [v for v in matched if v["title"] not in seen]
+
+    if inferred_used:
+        # Watch the guess before trusting it. The caller agreed to the trade
+        # during the read-back, which is real evidence — but "agreed to a
+        # sentence Mami said" is weaker than "said it themselves", and this is
+        # the first thing in the pipeline that produces a category nobody
+        # actually uttered.
+        needs_review = True
+        note = f"trade understood as {inferred!r}, not stated"
+        reason = f"{reason}; {note}" if reason else note
 
     store.upsert_call(
         call_id,
