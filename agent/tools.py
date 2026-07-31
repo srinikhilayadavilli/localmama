@@ -360,12 +360,18 @@ class Recorder:
             description=(
                 "Look up a business's phone number when the caller ASKS for it — "
                 "\"what is X's number\", \"how do I contact X\", \"can I call them\". "
-                "Only call this when they ask. Never volunteer businesses or "
-                "numbers they did not ask about."
+                "Use this INSTEAD of set_service: asking for a number is not a "
+                "service request. Only call this when they ask. Never volunteer "
+                "businesses or numbers they did not ask about."
             ),
         )
         async def lookup_vendor_contact(
-            business: Annotated[str, "The business name the caller asked about."],
+            business: Annotated[
+                str,
+                "The business NAME only — not the whole sentence. For \"I need the "
+                "number for Pax business\", pass \"Pax\". Words like business, "
+                "shop, store, phone or number are not part of the name.",
+            ],
         ) -> str:
             # The only backend call a caller ever waits on, and the only place
             # this process blocks on the network at all. Hard-bounded and

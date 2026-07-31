@@ -173,29 +173,72 @@ def find_business(name: str, limit: int = 5) -> list[Hit]:
     query = (name or "").strip()
     if not available() or not query:
         return []
-    owner, agent = _scope()
     try:
-        with db.cursor() as cur:
-            cur.execute(
-                f"SELECT {_COLUMNS},"
-                "  CASE WHEN lower(title) = lower(%(q)s) THEN 0"
-                "       WHEN lower(title) LIKE lower(%(q)s) || '%%' THEN 1"
-                "       ELSE 2 END AS rank"
-                " FROM utter.knowledge"
-                " WHERE owner_id = %(owner)s AND agent_id = %(agent)s"
-                "   AND (lower(title) LIKE '%%' || lower(%(q)s) || '%%'"
-                "        OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')"
-                " ORDER BY rank, title LIMIT %(k)s",
-                {"q": query, "k": limit, "owner": owner, "agent": agent},
-            )
-            found = [Hit(*row) for row in cur.fetchall()]
+        found = _literal_business(query, limit)
         if found:
             logger.info("name lookup %r -> %s", query[:40], [h.title for h in found])
             return found
+
+        # Try again without the words a caller wraps a name in.
+        #
+        # A caller asked for "Pax business" and got nothing, because the
+        # catalogue calls it "Pax Jwellers" and `LIKE '%pax business%'` matches
+        # no title on earth. "Pax" on its own finds it immediately. People say
+        # "the Pax people", "Clean Mates shop", "that car wash company" — the
+        # name is in there, wearing a coat.
+        #
+        # Deliberately the *second* attempt: a business genuinely called "The
+        # Coffee Shop" is still found by its real name first, and only a query
+        # that has already failed gets taken apart.
+        core = _core_name(query)
+        if core and core != normalise_name(query):
+            found = _literal_business(core, limit)
+            if found:
+                logger.info("name lookup %r -> %r -> %s",
+                            query[:40], core, [h.title for h in found])
+                return found
     except Exception as exc:  # noqa: BLE001
         logger.warning("name lookup failed (%s); continuing without it", exc)
         return []
     return _approximate_business(query, limit)
+
+
+#: Words a caller wraps a business name in, and which stop a literal match
+#: dead. None of them is ever the distinguishing part of a name.
+_FILLER = frozenset({
+    "business", "businesses", "shop", "shops", "store", "stores",
+    "company", "co", "people", "guys", "place",
+    "phone", "number", "contact", "the", "a", "an", "of", "for",
+})
+
+
+def _core_name(query: str) -> str:
+    """A business name with the words around it removed.
+
+    Empty if nothing survives — "the shop" names no business, and searching on
+    what is left of it would match half the catalogue.
+    """
+    words = [w for w in normalise_name(query).split() if w not in _FILLER]
+    return " ".join(words)
+
+
+def _literal_business(query: str, limit: int) -> list[Hit]:
+    """Titles and keywords containing `query`, most literal first."""
+    owner, agent = _scope()
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT {_COLUMNS},"
+            "  CASE WHEN lower(title) = lower(%(q)s) THEN 0"
+            "       WHEN lower(title) LIKE lower(%(q)s) || '%%' THEN 1"
+            "       ELSE 2 END AS rank"
+            " FROM utter.knowledge"
+            " WHERE owner_id = %(owner)s AND agent_id = %(agent)s"
+            "   AND (lower(title) LIKE '%%' || lower(%(q)s) || '%%'"
+            "        OR lower(coalesce(keywords,'')) LIKE '%%' || lower(%(q)s) || '%%')"
+            " ORDER BY rank, title LIMIT %(k)s",
+            {"q": query, "k": limit, "owner": owner, "agent": agent},
+        )
+        return [Hit(*row) for row in cur.fetchall()]
 
 
 def _approximate_business(query: str, limit: int) -> list[Hit]:
