@@ -28,11 +28,17 @@ logger = get_logger("localmama.store")
 #: Outcomes that will never improve by trying again. Everything else stays
 #: `pending` for the outbox to sweep.
 _NOT_WORTH_RETRYING = frozenset({
-    "no phone",            # anonymous caller — nowhere to send
-    "not configured",      # WhatsApp credentials absent
+    "no phone",            # anonymous caller — there is nowhere to send
     "incomplete lead",     # no service; the message would have nothing to say
-    "service unverified",  # we cannot vouch for the trade they asked for
+    "service unverified",  # unconfirmed, and we cannot vouch for the trade
 })
+
+#: Deliberately NOT in the set above. WhatsApp being unconfigured is a state of
+#: this deployment, not of the lead — it changes the moment someone sets the
+#: credentials, and every lead that arrived in the meantime is still owed a
+#: message. Marking those terminal loses them permanently for a reason that
+#: has since gone away.
+_CONFIG_WILL_CHANGE = "not configured"
 
 
 def record_events(events: list[Event]) -> tuple[list[str], list[str]]:
@@ -251,6 +257,35 @@ def claim_owed_handoffs(limit: int = 50, stale_after_minutes: int = 10) -> list[
         return claimed
     except Exception as exc:  # noqa: BLE001 - a sweep must never kill the worker
         logger.warning("could not claim from the outbox: %s", exc)
+        return []
+
+
+def unprocessed_leads(limit: int = 50) -> list[str]:
+    """Calls that ended but were never turned into a lead.
+
+    The pipeline runs in a background task after the API has answered, so
+    anything that kills the process in between — a deploy, a restart, an
+    exception nobody caught — leaves a call with every captured value stored
+    and nothing done with it. It has no vendors, no confidence, no message, and
+    since `processed_at` is null the outbox will not touch it either.
+
+    Those are the leads that go missing without anybody noticing, so the sweep
+    re-runs the pipeline on them rather than trying to send from a half-built
+    row. Processing is idempotent, so a lead that was mid-flight when we looked
+    simply gets done twice.
+    """
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT call_id FROM localmama.leads"
+                " WHERE agent_id = %s AND ended_at IS NOT NULL"
+                "   AND processed_at IS NULL"
+                " ORDER BY created_at LIMIT %s",
+                (settings.brain_agent_id, limit),
+            )
+            return [r[0] for r in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001 - a sweep must never kill the worker
+        logger.warning("could not look for unprocessed leads: %s", exc)
         return []
 
 

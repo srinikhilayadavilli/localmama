@@ -262,9 +262,12 @@ async def process(call_id: str) -> dict | None:
 
     raw = lead.get("raw") or {}
     if not raw:
+        # Genuinely nothing: a wrong number, a hang-up during the greeting.
+        # Not a lead, and not worth a human's time either.
         logger.info("call %s captured nothing; not processing an empty lead",
                     call_id[:8])
         store.upsert_call(call_id, processed_at=_now(), needs_review=False)
+        store.mark_whatsapp(call_id, False, "incomplete lead")
         return lead
 
     english = await normalise(raw)
@@ -338,11 +341,19 @@ async def process(call_id: str) -> dict | None:
     )
 
     subject, skip = _what_the_message_is_about(
-        english, confidence, asked, confirmed=lead.get('confirmed') is True
+        english, confidence, asked, confirmed=lead.get("confirmed") is True
     )
     if skip:
-        logger.info("call %s: %s — storing the lead, sending nothing",
+        # No message, so a person has to be the one who follows up. A lead we
+        # cannot message is exactly the lead most likely to be forgotten —
+        # nothing failed loudly, the customer simply never hears from anyone.
+        logger.info("call %s: %s — storing the lead for review, sending nothing",
                     call_id[:8], skip)
+        store.upsert_call(
+            call_id, needs_review=True,
+            review_reason=f"{reason}; not messaged ({skip})" if reason
+                          else f"not messaged ({skip})",
+        )
         store.mark_whatsapp(call_id, False, skip)
         return store.get_lead(call_id)
 

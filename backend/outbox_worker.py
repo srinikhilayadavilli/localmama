@@ -65,10 +65,36 @@ async def drain(limit: int = 50) -> tuple[int, int]:
     return sent, failed
 
 
+async def reprocess() -> int:
+    """Finish any call that ended without being turned into a lead.
+
+    The pipeline runs in a background task after the API has answered, so a
+    deploy, a restart or an uncaught exception in between leaves a call with
+    every value captured and nothing done with it — no vendors, no message, and
+    invisible to the outbox because it was never processed.
+
+    Those are the leads that vanish without anyone noticing. Idempotent, so a
+    lead that was merely mid-flight gets processed twice and is none the worse.
+    """
+    from . import pipeline
+
+    owed = store.unprocessed_leads()
+    for call_id in owed:
+        try:
+            await pipeline.process(call_id)
+            logger.info("recovered %s, which ended without being processed",
+                        call_id[:8])
+        except Exception:  # noqa: BLE001 - one bad lead, not the sweep
+            logger.exception("could not recover %s", call_id[:8])
+    return len(owed)
+
+
 async def one_pass() -> None:
+    recovered = await reprocess()
     sent, failed = await drain()
-    if sent or failed:
-        logger.info("sweep: sent %d, still owed %d", sent, failed)
+    if recovered or sent or failed:
+        logger.info("sweep: recovered %d, sent %d, still owed %d",
+                    recovered, sent, failed)
     store.expire_transcripts()
 
 

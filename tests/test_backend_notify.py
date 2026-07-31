@@ -327,3 +327,32 @@ async def test_their_own_words_beat_the_interpretation(monkeypatch, sent):
     assert len(sent) == 1
     # Not flagged: the match came from their own word, not the reading.
     assert "understood as" not in (store.updates[-1].get("review_reason") or "")
+
+
+# --- no lead goes missing --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_lead_we_cannot_message_still_reaches_a_human(monkeypatch, sent):
+    """A lead nobody can message is the one most likely to be forgotten:
+    nothing failed loudly, the customer simply never hears from anyone. It has
+    to land in the review queue instead."""
+    store = FakeStore(_lead(raw={"language": "telugu", "name": "Ravi"}))
+    monkeypatch.setattr(pipeline, "store", store)
+
+    await pipeline.process("c1")
+
+    assert sent == []
+    assert store.updates[-1]["needs_review"] is True
+    assert "not messaged" in store.updates[-1]["review_reason"]
+
+
+def test_an_unconfigured_whatsapp_is_retried_not_written_off():
+    """WhatsApp being unconfigured is a state of the deployment, not of the
+    lead. It changes the moment someone sets the credentials, and every lead
+    that arrived meanwhile is still owed a message — so it must not be
+    terminal."""
+    from backend.store import _NOT_WORTH_RETRYING
+
+    assert "not configured" not in _NOT_WORTH_RETRYING
+    assert "no phone" in _NOT_WORTH_RETRYING
