@@ -71,3 +71,52 @@ def test_a_real_cook_is_still_a_cook():
     of them."""
     service, _ = extract_service("I need someone for cooking", expecting=True)
     assert service == "cook"
+
+
+# --- a city written the way people write it --------------------------------
+
+
+import pytest as _pytest  # noqa: E402  (appended section)
+
+from backend.services.entity_extractor import _CITY_SNAP, canonical_city  # noqa: E402
+
+
+@_pytest.mark.parametrize(("said", "written"), [
+    ("Rajamandri", "Rajahmundry"),   # what Sarvam returns for "రాజమండ్రి"
+    ("Bangaluru", "Bengaluru"),
+    ("Kolkatta", "Kolkata"),
+    ("Haidarabad", "Hyderabad"),
+    ("Coimbator", "Coimbatore"),
+])
+def test_a_city_is_respelled_the_way_it_is_written(said, written):
+    """No transliterator produces "Rajahmundry" — it is a colonial exonym that
+    follows from nothing. Sarvam romanises "రాజమండ్రి" phonetically correctly
+    to "Rajamandri", and its translate endpoint says "Rajamahendravaram". The
+    conventional spelling has to be looked up."""
+    assert canonical_city(said) == written
+
+
+@_pytest.mark.parametrize("locality", [
+    "Madhapur", "Madapur", "Gachibowli", "Kukatpally", "Koramangala",
+    "Kondapur", "Rajarhat", "Behala", "Indiranagar",
+])
+def test_a_locality_is_left_exactly_as_it_arrived(locality):
+    """There is nothing here to check a locality against, and snapping one to
+    the nearest city sends the lead somewhere the caller never said. Measured:
+    every one of these sits at or below 0.71 against its nearest seed, while
+    every real variant is 0.83 or better."""
+    assert canonical_city(locality) == locality
+
+
+def test_the_cutoff_sits_in_the_measured_gap():
+    assert 0.71 < _CITY_SNAP < 0.83
+
+
+def test_a_locality_with_its_city_is_not_snapped():
+    """"Madhapur Hyderabad" is the whole answer, not a misspelling of one."""
+    assert canonical_city("Madhapur Hyderabad") == "Madhapur Hyderabad"
+
+
+def test_nothing_in_nothing_out():
+    assert canonical_city("") == ""
+    assert canonical_city(None) is None or canonical_city(None) == ""

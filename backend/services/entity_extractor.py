@@ -20,6 +20,7 @@ import re
 
 from ..text import normalize_text
 from .extraction import Expecting, Extraction
+from .grounding import sound_key
 
 MIN_CONFIDENCE = 0.5
 
@@ -202,7 +203,63 @@ CITY_SEEDS: tuple[str, ...] = (
     "howrah", "siliguri", "durgapur", "asansol", "noida", "gurgaon", "gurugram",
     "ghaziabad", "faridabad", "thane", "navi mumbai", "chandigarh", "ludhiana",
     "amritsar", "agra", "varanasi", "meerut", "rajkot", "nashik", "aurangabad",
+    "rajahmundry",
 )
+
+#: How close a romanised place has to *sound* to a known city before it is
+#: respelled as that city.
+#:
+#: A transliterator cannot produce "Rajahmundry". Sarvam romanises "రాజమండ్రి"
+#: to "Rajamandri", which is phonetically right and is not how anyone writes
+#: the city; its translate endpoint says "Rajamahendravaram", the 2015 official
+#: rename, which is also not how anyone writes it. The conventional spelling is
+#: a colonial exonym and follows from nothing — it has to be looked up.
+#:
+#: Compared on `sound_key`, not spelling, for the reason that function exists:
+#: raw, "rajamandri"/"rajahmundry" is 0.76, which is inside the range where
+#: real localities collide. Keyed, the two populations separate cleanly.
+#: Measured against every seed:
+#:
+#:   should snap:     rajamandri 0.86, haidarabad 0.84, bangaluru 0.89,
+#:                    chennei 0.83, puna 0.86, coimbator 0.95  (min 0.83)
+#:   must NOT snap:   madhapur 0.71, kondapur 0.71, koramangala 0.67,
+#:                    gachibowli 0.53, kukatpally 0.55         (max 0.71)
+#:
+#: 0.80 sits in the gap with margin on both sides. The failure this guards
+#: against is not cosmetic: snapping a locality to a city sends the lead
+#: somewhere the caller never said.
+_CITY_SNAP = 0.80
+
+
+_CITY_SEED_SET = frozenset(CITY_SEEDS)
+
+
+def canonical_city(text: str) -> str:
+    """A romanised place respelled the way the city is actually written.
+
+    Only ever snaps to a city this file already knows. A locality — Madhapur,
+    Gachibowli, Rajarhat — is left exactly as it arrived, because there is
+    nothing here to check it against and a wrong guess is worse than a rough
+    spelling.
+
+    The seed list is the limit of this, and it is the wrong long-term shape: a
+    real gazetteer, with localities and their aliases, is what makes this a
+    lookup instead of a guess.
+    """
+    place = (text or "").strip()
+    if not place:
+        return place
+    lowered = normalize_text(place)
+    if not lowered or lowered in _CITY_SEED_SET:
+        return place                       # already written the conventional way
+
+    key = sound_key(lowered)
+    best, score = None, 0.0
+    for seed in CITY_SEEDS:
+        ratio = difflib.SequenceMatcher(None, key, sound_key(seed)).ratio()
+        if ratio > score:
+            best, score = seed, ratio
+    return best.title() if best and score >= _CITY_SNAP else place
 
 # Locality suffixes/prepositions marking a place in each language.
 #: Prepositional forms. Safe to run in any state — "in Hyderabad" is

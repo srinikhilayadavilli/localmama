@@ -36,7 +36,7 @@ from contract import CapturedField
 from .config import settings
 from .logger import get_logger
 from .services import brain, translate, whatsapp
-from .services.entity_extractor import extract, format_name
+from .services.entity_extractor import canonical_city, extract, format_name
 from .services.extraction import FOR_FIELD
 from .services.grounding import score as ground_score
 from . import store
@@ -95,7 +95,14 @@ async def normalise(raw: dict[str, str]) -> dict[str, str | None]:
 
     if city:
         found = extract(city, expecting=FOR_FIELD[CapturedField.CITY])
-        out["city"] = format_name(await translate.english_place(found.city_or_area or city))
+        # Romanised, then respelled the way the city is actually written. A
+        # transliterator gets the sound right and the spelling conventional
+        # only by accident: "రాజమండ్రి" comes back "Rajamandri", and the lead —
+        # and the WhatsApp the caller reads — said a city that does not exist.
+        # A locality is left alone; see `canonical_city`.
+        out["city"] = canonical_city(
+            format_name(await translate.english_place(found.city_or_area or city))
+        )
 
     return out
 
