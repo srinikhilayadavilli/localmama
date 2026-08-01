@@ -313,6 +313,41 @@ _FUZZY_LENGTH_RATIO = 0.85
 #: damaging "టెన్షన్"/"ట్యూషన్" (tension/tuition) scores 0.71.
 _FUZZY_CUTOFF_INDIC = 0.80
 
+#: Words that frame a request rather than name a trade, and which are close
+#: enough in spelling to a synonym to be rescued as one. Measured against the
+#: whole synonym table — these are every word of an ordinary request that clears
+#: both guards below and still reaches the wrong trade:
+#:
+#:   looking   -> cooking   0.86  -> cook
+#:   booking   -> cooking   0.86  -> cook
+#:   wanting   -> painting  0.80  -> painter
+#:   searching -> coaching  0.71  -> tutor
+#:   number    -> plumber   0.77  -> plumber
+#:
+#: Neither guard can catch these, because neither is wrong about what it sees:
+#: "looking" and "cooking" really are one character apart and really are the
+#: same length. What makes it a coincidence rather than a slip is that nobody
+#: has ever asked for a "looking" — which is knowledge about the request, not
+#: about the spelling.
+#:
+#: "I am looking for mental health help" was filed as `cook`, and confidently:
+#: the rescue reports 0.85, above `MIN_CONFIDENCE`, so nothing re-prompted and
+#: the caller was read back a trade nobody said. It only bites a trade this
+#: catalog does not list — for the eighteen it does, `match_service` finds the
+#: real one first — which is exactly the case the vendor catalogue exists to
+#: serve. Mental health, photography and astrology are all in the catalogue and
+#: none of them is in here.
+#:
+#: The near neighbours of the measured five are included as well. They cost
+#: nothing today and they are not a guess about spelling: no caller names their
+#: trade with any of these words, so a future synonym that happens to land near
+#: one is caught before it does damage rather than after.
+_NOT_A_TRADE = frozenset({
+    "looking", "searching", "seeking", "booking", "wanting", "needing",
+    "wanted", "needed", "requiring", "required", "number", "numbers",
+    "contact", "details", "enquiry", "inquiry",
+})
+
 #: Flat lookup of every synonym, built once for fuzzy matching.
 #:
 #: Indic spellings are included, not just ASCII. A real Telugu call said
@@ -335,7 +370,7 @@ def fuzzy_match_service(text: str) -> str | None:
     because guessing there would put a service in the lead that the caller
     never asked for.
 
-    Two guards keep character similarity from standing in for meaning. Both
+    Three guards keep character similarity from standing in for meaning. All
     were added after this function silently produced wrong leads:
 
     1. **A stricter cutoff for Indic scripts**, where one character is a whole
@@ -352,9 +387,18 @@ def fuzzy_match_service(text: str) -> str | None:
        incomplete phrase — and "service" is 7 of the 10 characters in "ac
        service", scoring 0.82. That made every "car service", "bike service"
        and "RO service" come out as AC repair.
+
+    3. **Words that frame a request are never a trade** (`_NOT_A_TRADE`). This
+       runs on the whole utterance, so the verb a caller wraps their request in
+       is a candidate too — and "looking" is one character from "cooking".
+       Every "I am looking for X" whose X the catalog does not list came out as
+       `cook`.
+
+    Skipped word by word rather than abandoning the utterance: "I am looking for
+    a plummer" has to step over "looking" and still reach the plumber.
     """
     for token in normalize_text(text).split():
-        if len(token) < _FUZZY_MIN_LENGTH:
+        if len(token) < _FUZZY_MIN_LENGTH or token in _NOT_A_TRADE:
             continue
         cutoff = _FUZZY_CUTOFF if token.isascii() else _FUZZY_CUTOFF_INDIC
         close = difflib.get_close_matches(

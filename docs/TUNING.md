@@ -141,6 +141,32 @@ a stricter 0.80 cutoff for Indic, where one character is a whole syllable
 plumbing call as a tutor). Neither guard is a blanket ban — the first attempt
 at each was, and both lost real matches.
 
+It also needs to know that **the words framing a request are never the trade**
+(`_NOT_A_TRADE`). The rescue runs on the whole utterance, so the caller's verb
+is a candidate too, and measured against the full synonym table five ordinary
+request words clear both guards above and reach a wrong trade:
+
+| Word | Nearest synonym | Ratio | Filed as |
+|---|---|---|---|
+| `looking` | `cooking` | 0.86 | cook |
+| `booking` | `cooking` | 0.86 | cook |
+| `wanting` | `painting` | 0.80 | painter |
+| `searching` | `coaching` | 0.71 | tutor |
+| `number` | `plumber` | 0.77 | plumber |
+
+Neither existing guard can catch these and neither is wrong about what it sees:
+"looking" and "cooking" really are one character apart and really are the same
+length. What makes it coincidence rather than a slip is that nobody asks for a
+"looking" — knowledge about the request, not about the spelling.
+
+**This only ever bit a trade the rule catalog does not list**, because for the
+eighteen it does `match_service` finds the real one first. That is exactly the
+set the 120-row vendor catalogue exists to serve: "I am looking for mental
+health help" was filed as `cook` and matched three restaurants, at 0.85 — above
+`MIN_CONFIDENCE`, so nothing re-prompted and the caller heard "cook" read back.
+Words are skipped rather than the utterance abandoned, so "I am looking for a
+plummer" steps over "looking" and still reaches the plumber.
+
 ### Language
 
 - **Recognised in every Indian script.** A caller saying "తెలుగు" transcribed
