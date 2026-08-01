@@ -199,6 +199,26 @@ Two lookups, and **both are literal — neither embeds**:
   "cleaning" returns a dental clinic on the strength of "teeth cleaning".
   Requires a phone: a name the caller cannot ring is a teaser, not an answer.
 
+**The city means opposite things to the two lookups, deliberately.** To a
+service match it is a hard filter — a plumber in Chennai is not a weaker answer
+for a Hyderabad caller, it is the wrong one. To a name lookup it only decides
+between hits: a caller who names a business has named it, and answering "I
+don't have them listed" because our `city` column disagrees is a lie about a
+business we hold. So it narrows the list only when narrowing leaves something,
+the same shape as a category hit narrowing a service match, and what it buys is
+the ambiguous case — two branches of nearly one name, one of them local, is an
+answer rather than "could you say the full name?".
+
+`/v1/vendors` accepted the city and dropped it; the agent had been sending it
+all along. It is transliterated alongside the name and concurrently with it —
+both are free for a Latin value, and when they are not, one round trip on the
+only call a caller waits on rather than two.
+
+**120 of the 121 rows have no city at all**, so this narrows almost nothing
+today. A listing with no city is treated as unknown rather than local: it never
+survives the narrowing and is always in the fallback, so it can never be
+withheld and can never displace a real local match.
+
 **Semantic search was removed, not merely unused.** It matched "electrician" to
 Elecsyn Energy, an EV charging company, at 0.59 — because the words look alike.
 That is a stranger's phone number read out to a caller. The neighbourhood of a

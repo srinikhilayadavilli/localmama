@@ -204,3 +204,57 @@ def test_an_abandoned_call_is_processed_too(client):
     assert client.store.raw["c2"] == {"name": "రవి"}
     assert client.store.calls["c2"]["status"] == "abandoned"
     assert client.store.calls["c2"]["confirmed"] is None
+
+
+# --- the vendor lookup ------------------------------------------------------
+
+
+def test_the_callers_city_reaches_the_lookup(client, monkeypatch):
+    """The agent has always sent the city and this endpoint used to drop it, so
+    two branches of one business were an "AMBIGUOUS" reply to a caller who had
+    already said the thing that separates them."""
+    seen = {}
+
+    def _find(name, limit=5, *, city=None):
+        seen.update(name=name, city=city)
+        return []
+
+    monkeypatch.setattr(api.brain, "available", lambda: True)
+    monkeypatch.setattr(api.brain, "looks_like_a_category", lambda q: False)
+    monkeypatch.setattr(api.brain, "find_business", _find)
+
+    res = client.get("/v1/vendors", params={"name": "Pax", "city": "Kolkata"},
+                     headers=_auth())
+    assert res.status_code == 200
+    assert seen == {"name": "Pax", "city": "Kolkata"}
+
+
+def test_a_city_in_the_callers_script_reaches_the_lookup_in_english(client, monkeypatch):
+    """The catalogue is English and matching is literal, so a city still in the
+    caller's script would narrow nothing — the same trip the name makes."""
+    seen = {}
+
+    def _find(name, limit=5, *, city=None):
+        seen.update(name=name, city=city)
+        return []
+
+    monkeypatch.setattr(api.brain, "available", lambda: True)
+    monkeypatch.setattr(api.brain, "looks_like_a_category", lambda q: False)
+    monkeypatch.setattr(api.brain, "find_business", _find)
+
+    res = client.get("/v1/vendors", params={"name": "Pax", "city": "కోల్‌కతా"},
+                     headers=_auth())
+    assert res.status_code == 200
+    assert seen["city"].isascii() and seen["city"]
+
+
+def test_no_city_is_not_an_error(client, monkeypatch):
+    """Most callers name a business before they have said where they are."""
+    monkeypatch.setattr(api.brain, "available", lambda: True)
+    monkeypatch.setattr(api.brain, "looks_like_a_category", lambda q: False)
+    monkeypatch.setattr(api.brain, "find_business",
+                        lambda name, limit=5, *, city=None: [])
+
+    res = client.get("/v1/vendors", params={"name": "Pax"}, headers=_auth())
+    assert res.status_code == 200
+    assert res.json()["match"] == "none"

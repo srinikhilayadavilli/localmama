@@ -157,3 +157,90 @@ def test_dropping_unknown_words_cannot_empty_a_real_query(monkeypatch):
 
     monkeypatch.setattr(brain, "vocabulary", lambda force=False: set())
     assert brain._known_words("beauty parlour") == "beauty parlour"
+
+
+# --- the caller's city decides between hits, it does not withhold them ------
+
+
+def _hit(title, city=None):
+    from backend.services.brain import Hit
+
+    return Hit(id=1, title=title, content="", category=None, city=city,
+               phone="9000000000")
+
+
+def test_a_city_is_matched_either_way_round():
+    """The caller gives a locality as often as a city, and the listings carry
+    cities — so "Madhapur, Hyderabad" has to find a Hyderabad listing."""
+    from backend.services.brain import _in_city
+
+    hits = [_hit("A", "Hyderabad"), _hit("B", "Kolkata")]
+    assert [h.title for h in _in_city(hits, "Madhapur, Hyderabad")] == ["A"]
+    assert [h.title for h in _in_city(hits, "Kolkata")] == ["B"]
+
+
+def test_a_listing_with_no_city_is_not_in_the_callers_city():
+    """It is unknown, not local. It belongs in the fallback — where it is still
+    returned — rather than in the narrowed list."""
+    from backend.services.brain import _in_city
+
+    assert _in_city([_hit("A"), _hit("B")], "Kolkata") == []
+
+
+def test_no_city_narrows_nothing():
+    from backend.services.brain import _in_city
+
+    assert _in_city([_hit("A", "Kolkata")], None) == []
+    assert _in_city([_hit("A", "Kolkata")], "  ") == []
+
+
+def _catalogue(monkeypatch, hits):
+    """A brain whose literal lookup returns `hits`, and nothing else."""
+    from backend.services import brain
+
+    monkeypatch.setattr(brain, "available", lambda: True)
+    monkeypatch.setattr(brain, "_literal_business",
+                        lambda query, limit: hits[:limit])
+    return brain
+
+
+def test_the_callers_city_settles_an_ambiguous_name(monkeypatch):
+    """Two branches of nearly the same name used to be an AMBIGUOUS reply —
+    "could you say the full name?" — to a caller who had already said the one
+    thing that separates them."""
+    brain = _catalogue(monkeypatch, [_hit("Pax Jwellers", "Kolkata"),
+                                     _hit("Pax Jewellers", "Hyderabad")])
+    found = brain.find_business("Pax", limit=4, city="Kolkata")
+    assert [h.title for h in found] == ["Pax Jwellers"]
+
+
+def test_a_business_is_never_withheld_because_of_its_city(monkeypatch):
+    """A caller who names a business has named it. Answering "I don't have them
+    listed" because the `city` column disagrees is a lie about a business we
+    hold — which is why this narrows and never filters."""
+    brain = _catalogue(monkeypatch, [_hit("Brimmies Cafe", "Kolkata")])
+    assert [h.title for h in brain.find_business("Brimmies Cafe", city="Chennai")] \
+        == ["Brimmies Cafe"]
+    # …and the overwhelmingly common case: the listing has no city at all.
+    brain = _catalogue(monkeypatch, [_hit("Brimmies Cafe")])
+    assert [h.title for h in brain.find_business("Brimmies Cafe", city="Chennai")] \
+        == ["Brimmies Cafe"]
+
+
+def test_the_city_narrows_the_whole_list_not_a_truncated_one(monkeypatch):
+    """Narrowing a list the `LIMIT` already cut is narrowing the wrong list: the
+    record in the caller's own city may be the one that was cut off."""
+    from backend.services.brain import _CITY_WINDOW
+
+    hits = [_hit(f"Pax {i}") for i in range(6)] + [_hit("Pax Kolkata", "Kolkata")]
+    brain = _catalogue(monkeypatch, hits)
+
+    assert brain.find_business("Pax", limit=4) == hits[:4]      # no city, no window
+    assert [h.title for h in brain.find_business("Pax", limit=4, city="Kolkata")] \
+        == ["Pax Kolkata"]
+    assert _CITY_WINDOW > 1
+
+
+def test_the_narrowed_list_still_respects_the_limit(monkeypatch):
+    brain = _catalogue(monkeypatch, [_hit(f"Pax {i}", "Kolkata") for i in range(9)])
+    assert len(brain.find_business("Pax", limit=4, city="Kolkata")) == 4

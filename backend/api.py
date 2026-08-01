@@ -20,6 +20,7 @@ the agent would believe the lead had landed.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from contextlib import asynccontextmanager
 
@@ -188,6 +189,12 @@ async def get_vendor(
     their WhatsApp — the one thing they actually wanted was the one thing left
     out. Recorded in the background, after the reply has gone: they are waiting
     on the number, not on us filing it.
+
+    `city` is whatever the caller has said so far about where they are. The
+    agent has always sent it and this endpoint used to drop it, so two branches
+    of the same business were an `AMBIGUOUS` reply — "could you say the full
+    name?" — to a caller who had already said the only thing that separates
+    them. It decides between hits and never withholds one; see `find_business`.
     """
     if not brain.available():
         return VendorReply(
@@ -197,8 +204,16 @@ async def get_vendor(
         )
 
     # The catalogue is English and matching is literal, so a name still in the
-    # caller's script reaches nothing.
-    english = await translate.english_name(name)
+    # caller's script reaches nothing. The city has to make the same trip, and
+    # for the same reason it is transliterated rather than translated.
+    #
+    # Together, because this is the one call a caller is waiting on. Both are
+    # free for a Latin value — `needs_translation` sends nothing — and when
+    # they are not, concurrently costs one round trip rather than two.
+    english, where = await asyncio.gather(
+        translate.english_name(name),
+        translate.english_place(city or ""),
+    )
 
     if brain.looks_like_a_category(english):
         return VendorReply(
@@ -209,7 +224,7 @@ async def get_vendor(
             ),
         )
 
-    matches = brain.find_business(english, limit=4)
+    matches = brain.find_business(english, limit=4, city=where)
     if not matches:
         return VendorReply(
             match=MatchKind.NONE,

@@ -101,6 +101,18 @@ def _block(ch: str) -> tuple[int, str] | None:
     return None
 
 
+#: Zero-width joiner and non-joiner. Indic typography, not sound: they tell a
+#: renderer whether to form a conjunct and belong to no script block, so the
+#: "non-Indic characters pass through untouched" rule carried them into the
+#: output. "కోల్‌కతా" romanised to "kol‌kata" — indistinguishable from
+#: "kolkata" to a reader and unequal to it everywhere it matters.
+_ZERO_WIDTH = {ord("‌"): None, ord("‍"): None}
+
+
+def _visible(text: str) -> str:
+    return (text or "").translate(_ZERO_WIDTH)
+
+
 def is_indic(text: str) -> bool:
     """Whether any character belongs to a script this can romanise."""
     return any(_block(ch) is not None for ch in text or "")
@@ -110,8 +122,11 @@ def romanise_word(word: str) -> str:
     """One whitespace-free token in Latin letters.
 
     Non-Indic characters pass through untouched, so a mixed token like
-    "AC सर्विस" survives and "plumber" is returned as it arrived.
+    "AC सर्विस" survives and "plumber" is returned as it arrived. Zero-width
+    joiners are the exception: they are typography rather than sound, and
+    letting them through leaves an invisible character in the output.
     """
+    word = _visible(word)
     out: list[str] = []
     #: True when a consonant has been emitted whose inherent vowel has not yet
     #: been decided — the next character either replaces it, cancels it, or
@@ -171,6 +186,9 @@ def romanise(text: str) -> str:
     """`text` in Latin letters, word by word. Never raises, never returns None."""
     if not text:
         return ""
+    # Before the Indic test, not after: a value that is already Latin apart from
+    # a stray joiner is exactly the one that returns early.
+    text = _visible(text)
     if not is_indic(text):
         return text
     return " ".join(romanise_word(word) for word in text.split())

@@ -186,3 +186,40 @@ def test_a_field_the_caller_never_gave_is_not_audited():
     )
     assert "city" not in confidence
     assert not needs_review
+
+
+# --- romanisation leaves nothing invisible behind --------------------------
+
+
+def test_a_zero_width_joiner_does_not_survive_romanisation():
+    """"కోల్‌కతా" carries a zero-width non-joiner. It is typography, not sound,
+    and it belongs to no script block — so the "non-Indic characters pass
+    through" rule carried it into the output, where "kol‌kata" reads as
+    "kolkata" and is equal to nothing."""
+    from backend.services import translit
+
+    out = translit.romanise("కోల్‌కతా")
+    assert out.isascii()
+    assert "‌" not in out and "‍" not in out
+    assert out.lower().startswith("kolkata")
+
+
+def test_a_latin_value_with_a_stray_joiner_is_cleaned_too():
+    """It never reaches the Indic path — that is exactly why it needs the
+    same treatment."""
+    from backend.services import translit
+
+    assert translit.romanise("Kol‌kata") == "Kolkata"
+
+
+@pytest.mark.asyncio
+async def test_a_city_in_the_callers_script_can_be_compared_with_a_listing():
+    """The whole point of romanising it: the catalogue's city column is Latin,
+    and an invisible character in the middle of the value silently matched
+    nothing."""
+    from backend.services.brain import Hit, _in_city
+
+    out = await normalise({"city": "కోల్‌కతా"})
+    listing = Hit(id=1, title="Kartavya Life", content="", category=None,
+                  city="Kolkata", phone="9000000000")
+    assert _in_city([listing], out["city"]) == [listing]

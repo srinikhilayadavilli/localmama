@@ -165,19 +165,66 @@ def normalise_name(text: str) -> str:
     return " ".join((text or "").lower().translate(_PUNCT).split())
 
 
-def find_business(name: str, limit: int = 5) -> list[Hit]:
+#: How much wider to look when a city has to decide between hits. Narrowing a
+#: list that was already truncated is narrowing the wrong list — the record in
+#: the caller's own city may be the one the `LIMIT` cut off. Only paid when a
+#: city was actually given.
+_CITY_WINDOW = 3
+
+
+def _in_city(hits: list[Hit], city: str | None) -> list[Hit]:
+    """Just the hits listed in `city`. Empty is a valid answer.
+
+    Matched both ways round, as the service filter does: the caller gives a
+    locality as often as a city ("Madhapur, Hyderabad"), and the listings carry
+    cities. A listing with no city is not *in* the caller's city — it is simply
+    unknown, and it belongs in the fallback rather than the narrowed list.
+    """
+    place = (city or "").strip().lower()
+    if not place:
+        return []
+    return [
+        h for h in hits
+        if (listed := (h.city or "").strip().lower())
+        and (listed in place or place in listed)
+    ]
+
+
+def find_business(name: str, limit: int = 5, *, city: str | None = None) -> list[Hit]:
     """Businesses matching a NAME, most literal first.
 
     A caller asking "what is Brimmies Cafe's number?" wants an exact record.
+
+    `city` decides between hits rather than filtering them, which is the
+    opposite of what it does to a service match — and deliberately. A caller
+    who names a business has named it; answering "I don't have them listed"
+    because our `city` column disagrees would be a lie about a business we hold.
+    A caller who names a *trade* has named no one, so there a plumber in the
+    wrong city is simply the wrong answer.
+
+    So it narrows only when narrowing leaves something, the same shape as a
+    category hit narrowing a service match. What it buys is the ambiguous case:
+    two businesses of nearly the same name, one of them in the caller's city, is
+    an answer rather than "could you say the full name?".
     """
     query = (name or "").strip()
     if not available() or not query:
         return []
+
+    window = limit * _CITY_WINDOW if city else limit
+
+    def chosen(found: list[Hit]) -> list[Hit]:
+        narrowed = _in_city(found, city)
+        if narrowed and len(narrowed) < len(found):
+            logger.info("name lookup %r narrowed to %s by city %r",
+                        query[:40], [h.title for h in narrowed], city)
+        return (narrowed or found)[:limit]
+
     try:
-        found = _literal_business(query, limit)
+        found = _literal_business(query, window)
         if found:
             logger.info("name lookup %r -> %s", query[:40], [h.title for h in found])
-            return found
+            return chosen(found)
 
         # Try again without the words a caller wraps a name in.
         #
@@ -192,11 +239,11 @@ def find_business(name: str, limit: int = 5) -> list[Hit]:
         # that has already failed gets taken apart.
         core = _core_name(query)
         if core and core != normalise_name(query):
-            found = _literal_business(core, limit)
+            found = _literal_business(core, window)
             if found:
                 logger.info("name lookup %r -> %r -> %s",
                             query[:40], core, [h.title for h in found])
-                return found
+                return chosen(found)
 
         # Then every word, all of which must appear. Word order stops
         # mattering: "Jwellers Pax" and "Mates Clean" find nothing as a
@@ -209,15 +256,15 @@ def find_business(name: str, limit: int = 5) -> list[Hit]:
         # Several matches with no exact title makes the agent ask the caller to
         # repeat themselves, and a single spurious one makes it read out a
         # stranger's number.
-        found = _all_words_business(core or normalise_name(query), limit)
+        found = _all_words_business(core or normalise_name(query), window)
         if found:
             logger.info("name lookup %r -> every word -> %s",
                         query[:40], [h.title for h in found])
-            return found
+            return chosen(found)
     except Exception as exc:  # noqa: BLE001
         logger.warning("name lookup failed (%s); continuing without it", exc)
         return []
-    return _approximate_business(query, limit)
+    return chosen(_approximate_business(query, window))
 
 
 #: Words too short to narrow anything down. "Of", "at" and the like appear in
