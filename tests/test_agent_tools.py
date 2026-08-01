@@ -302,3 +302,32 @@ async def test_a_weak_lookup_does_not_stand_in_for_the_service(rec, monkeypatch)
     t = tools(rec)
     await t["lookup_vendor_contact"](business="Pax Jewellers")
     assert CapturedField.SERVICE in rec.session.missing()
+
+
+# --- the accent rides along with the language ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recording_a_language_carries_the_accent_with_it(rec):
+    """The tool result is the most recent thing in context and the accent block
+    is thousands of tokens back. A bare "Recorded language: english." is the
+    turn the accent slips on, and English is where it slips hardest: the choice
+    changes nothing about the words being produced, so the model carries on in
+    the accent it defaults to."""
+    reply = await tools(rec)["set_language"](language="english")
+
+    assert "Recorded language: english." in reply
+    assert "INDIAN ENGLISH" in reply
+    assert "NOT American" in reply
+    assert "STILL NEEDED" in reply       # the state line survives
+
+
+@pytest.mark.asyncio
+async def test_an_indic_language_is_reminded_about_its_english_words(rec):
+    """The switch itself moves the voice; what is left to guard is "plumber"
+    and "booking" arriving in an American accent inside a Telugu sentence."""
+    reply = await tools(rec)["set_language"](language="telugu")
+
+    assert "Recorded language: telugu." in reply
+    assert "Indian accent" in reply
+    assert "american" in reply.lower()

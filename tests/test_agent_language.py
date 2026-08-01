@@ -117,3 +117,32 @@ def test_the_stt_prompt_seeds_nothing_a_caller_could_be_credited_with():
     for seed in ("service", "plumber", "electrician", "geyser", "household",
                  "repair", "cleaning", "asking for help"):
         assert seed not in lowered, f"{seed!r} is a word the model can hallucinate"
+
+
+# --- the accent travels with the language choice ---------------------------
+
+
+def test_choosing_english_names_the_accent_explicitly():
+    """Picking Telugu or Hindi forces the model off its default voice whether
+    it wants to or not — there is no American Telugu to fall back into. Picking
+    English changes nothing about the words it was already producing, so it
+    carries on in the accent it defaults to. That is the one language whose
+    accent has to be said out loud."""
+    from agent.prompts.voice_style import accent_reminder
+    from agent.languages import Language
+
+    said = accent_reminder(Language.ENGLISH).lower()
+    assert "indian english" in said
+    assert "not american" in said
+    for drift in ("american", "british", "neutral"):
+        assert drift in said
+
+
+def test_every_language_gets_an_accent_reminder():
+    from agent.prompts.voice_style import accent_reminder
+    from agent.languages import Language
+
+    for language in Language:
+        said = accent_reminder(language).lower()
+        assert "indian" in said, language
+        assert "american" in said, language

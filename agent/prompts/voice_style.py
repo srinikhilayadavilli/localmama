@@ -149,6 +149,47 @@ GREETING_INSTRUCTION = (
     "accent for the entire call, so it is the one that matters most."
 )
 
+#: What a tool result says the moment the caller picks their language.
+#:
+#: Same reasoning as `GREETING_INSTRUCTION`, at the second turn that sets the
+#: accent for a whole call. The system prompt's accent block is thousands of
+#: tokens back; the tool result is the most recent thing in context and the
+#: model is steered by it far more strongly.
+#:
+#: **English is the case that needs this most, not least.** Picking Telugu or
+#: Hindi forces the model off its default voice whether it wants to or not —
+#: there is no American Telugu to fall back into. Picking *English* changes
+#: nothing about the words it was already producing, so it simply carries on in
+#: the accent it defaults to, which is American. The one language where the
+#: caller's choice does not itself disturb the voice is the one where the voice
+#: has to be named explicitly.
+_ACCENT_REANCHOR: dict[Language, str] = {
+    Language.ENGLISH: (
+        " Speak INDIAN ENGLISH from the very next syllable — the warm, clear "
+        "English of Hyderabad or Bangalore. Syllable-timed rhythm, retroflex t "
+        "and d, unaspirated p/t/k, full unreduced vowels. NOT American, NOT "
+        "British, NOT neutral. Choosing English does NOT mean American English; "
+        "it changes the language, never the accent. Hold this for the whole "
+        "call, including after every interruption and correction."
+    ),
+}
+
+#: Every other language gets the shorter form: the switch itself does most of
+#: the work, and what is left to guard is the English words inside the sentence.
+_ACCENT_REANCHOR_DEFAULT = (
+    " Speak {language} as a native speaker, in a native Indian accent. Keep the "
+    "English words you mix in — plumber, service, area, booking — in Indian "
+    "pronunciation too; never switch to an American accent for them."
+)
+
+
+def accent_reminder(language: Language) -> str:
+    """The accent instruction that rides along with a recorded language."""
+    return _ACCENT_REANCHOR.get(
+        language, _ACCENT_REANCHOR_DEFAULT.format(language=language.value)
+    )
+
+
 #: Before the caller has picked a language: no language is asserted, so the
 #: model is free to auto-detect, but the vocabulary bias still applies.
 GREETING_STT_PROMPT = (

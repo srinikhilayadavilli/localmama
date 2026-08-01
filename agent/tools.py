@@ -54,6 +54,7 @@ from contract import (
 from .backend_client import EventQueue, lookup_vendor
 from .languages import resolve_language
 from .logger import get_logger
+from .prompts.voice_style import accent_reminder
 
 logger = get_logger("localmama.tools")
 
@@ -315,7 +316,16 @@ class Recorder:
             s.pending_language = None
             s.language = resolved
             rec._capture(CapturedField.LANGUAGE, resolved.value, corrected)
-            return f"Recorded language: {resolved.value}." + s.state_line()
+            # The accent rides along with the answer, for the same reason the
+            # greeting carries its own: this tool result is the most recent
+            # thing in context and the accent block is thousands of tokens
+            # back. Picking English is the case that needs it — it changes
+            # nothing about the words being produced, so the model carries on
+            # in the accent it defaults to, which is American.
+            return (
+                f"Recorded language: {resolved.value}."
+                + accent_reminder(resolved) + s.state_line()
+            )
 
         def _setter(field_: CapturedField, noun: str):
             async def record(value: str, interpreted: str = "") -> str:
