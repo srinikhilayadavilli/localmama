@@ -99,6 +99,36 @@ class Settings:
         default_factory=lambda: int(_env("TRANSCRIPT_RETENTION_DAYS", "30"))
     )
 
+    # --- observability ---
+    #: Gates /metrics and /v1/ops/*. Separate from the agent's token because
+    #: they are different principals with different lifetimes: the agent holds
+    #: one secret to file leads, a scraper holds another to read aggregates,
+    #: and rotating either should not silence the other. Unset refuses the ops
+    #: surface entirely rather than opening it — these endpoints carry the
+    #: business's unit economics.
+    ops_token: str = field(default_factory=lambda: _env("OPS_TOKEN"))
+    #: For display only. Every stored price is USD, because that is what every
+    #: provider bills in; this converts for the people reading the dashboard,
+    #: who think in rupees. Deliberately not applied to anything stored — a
+    #: rate that moves would otherwise silently restate history.
+    inr_per_usd: float = field(
+        default_factory=lambda: float(_env("INR_PER_USD", "88.0"))
+    )
+    #: How long the per-response turn series is kept. It is the largest thing
+    #: this schema writes — tens of rows per call against a handful for the
+    #: ledger — and its value is diagnostic, which decays in days. The usage
+    #: ledger itself is never swept: it is the billing record.
+    turn_retention_days: int = field(
+        default_factory=lambda: int(_env("TURN_RETENTION_DAYS", "90"))
+    )
+    #: Cost per call above which a call is worth a human look. Not an alert on
+    #: its own — a long, successful call is allowed to be expensive — but the
+    #: dashboard ranks by it, because a runaway context looks exactly like an
+    #: ordinary call until you sort by price.
+    cost_alert_usd: float = field(
+        default_factory=lambda: float(_env("COST_ALERT_USD", "0.75"))
+    )
+
     # --- outbox ---
     outbox_sweep_seconds: float = field(
         default_factory=lambda: float(_env("OUTBOX_SWEEP_SECONDS", "300"))

@@ -54,6 +54,7 @@ from contract import (
 from .backend_client import EventQueue, lookup_vendor
 from .languages import resolve_language
 from .logger import get_logger
+from .metering import Meter
 from .prompts.voice_style import accent_reminder
 
 logger = get_logger("localmama.tools")
@@ -191,11 +192,16 @@ class Recorder:
     """Holds one call's session and exposes the tools the model may call."""
 
     def __init__(self, events: EventQueue, caller_phone: str | None = None,
-                 dialled: str | None = None, started_mono: float = 0.0) -> None:
+                 dialled: str | None = None, started_mono: float = 0.0,
+                 meter: Meter | None = None) -> None:
         self.session = CallSession(
             caller_phone=caller_phone, dialled=dialled, started_mono=started_mono
         )
         self.events = events
+        #: What the call consumed. Defaulted rather than required so a caller
+        #: that does not care about cost — every test in the suite — builds a
+        #: Recorder unchanged, and `call.ended` simply carries empty lists.
+        self.meter = meter or Meter(started_mono)
 
     # -- events ----------------------------------------------------------
 
@@ -227,11 +233,16 @@ class Recorder:
 
     def announce_end(self, status: CallStatus) -> None:
         s = self.session
+        # The room clock stops here, and this is the last moment anything knows
+        # how long it ran. Both metered per-minute charges are derived from it.
+        self.meter.note_session(self._at())
         self.events.send(CallEnded(
             event_id=str(uuid.uuid4()), call_id=s.call_id, seq=s.next_seq(),
             at=self._at(), status=status, confirmed=s.confirmed,
-            transcript=s.transcript, turn_gaps=s.turn_gaps, ended_at=_now(),
+            transcript=s.transcript, turn_gaps=s.turn_gaps,
+            usage=self.meter.usage(), turns=self.meter.turns(), ended_at=_now(),
         ))
+        logger.info("call=%s  metered: %s", s.short(), self.meter.summary())
 
     def note_caller_speech(self, text: str) -> None:
         """One final transcript of the caller's own audio.

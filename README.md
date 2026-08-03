@@ -197,6 +197,14 @@ Voice knobs: `OPENAI_REALTIME_VOICE`, `OPENAI_REALTIME_EAGERNESS`,
 **Backend** — `DATABASE_URL`, `AGENT_TOKEN`, `SARVAM_API_KEY`, `WHATSAPP_*`,
 `BRAIN_OWNER_ID`, `BRAIN_AGENT_ID`, `REVIEW_THRESHOLD`,
 `TRANSCRIPT_RETENTION_DAYS`. See `backend/config.py`.
+Monitoring and cost: `OPS_TOKEN`, `INR_PER_USD`, `TURN_RETENTION_DAYS` —
+see [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+
+`TRANSCRIPT_RETENTION_DAYS` sweeps **both** copies. A transcript is stored
+twice: assembled onto the lead row, and again inside the `call.ended` payload
+in the raw event log. Only the first used to be cleared, so the sweep reported
+success while a complete copy of every word every caller had said stayed in
+`call_events` indefinitely — see `store.expire_transcripts`.
 
 `LIVEKIT_AGENT_NAME` has **no default**, deliberately. With one, a laptop
 running `make agent` against a production `.env` becomes eligible for

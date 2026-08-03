@@ -36,6 +36,8 @@ class FakeStore:
         self.calls: dict[str, dict] = {}
         self.raw: dict[str, dict] = {}
         self.processed: list[str] = []
+        self.usage: dict[str, list] = {}
+        self.turns: dict[str, list] = {}
 
     def record_events(self, events):
         accepted = [e.event_id for e in events if e.event_id not in self.seen]
@@ -48,6 +50,14 @@ class FakeStore:
 
     def merge_raw(self, call_id, field, value):
         self.raw.setdefault(call_id, {})[field.value] = value
+
+    def record_usage(self, call_id, source, records):
+        self.usage.setdefault(call_id, []).extend(records)
+        return len(records)
+
+    def record_turns(self, call_id, turns):
+        self.turns.setdefault(call_id, []).extend(turns)
+        return len(turns)
 
 
 @pytest.fixture()

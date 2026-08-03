@@ -38,10 +38,10 @@ from contract import (
     VendorReply,
 )
 
-from . import db, pipeline, store
+from . import db, ops, pipeline, store
 from .config import missing_required, settings
 from .logger import get_logger, setup_logging
-from .services import brain, translate
+from .services import brain, meter, translate
 
 logger = get_logger("localmama.api")
 
@@ -56,6 +56,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Local Mama lead backend", version="1.0", lifespan=lifespan)
+
+# The operator surface: /metrics and /v1/ops/*. Its own router, its own token,
+# and no shared code path with the agent's — a reporting query must never be
+# able to slow down the one endpoint a caller is waiting on. See `ops.py`.
+app.include_router(ops.router)
 
 
 async def authorise(authorization: str = Header(default="")) -> None:
@@ -156,6 +161,12 @@ def _apply(event, background: BackgroundTasks) -> None:  # noqa: ANN001
             turn_gaps=_json(event.turn_gaps),
             ended_at=event.ended_at,
         )
+        # What the call consumed. Both are empty from an agent built before
+        # metering existed, and both are stored rather than priced — the rate
+        # card does that at read time, so a corrected rate re-prices history.
+        # Neither can fail this event: see the store functions.
+        store.record_usage(event.call_id, "agent", event.usage)
+        store.record_turns(event.call_id, event.turns)
         # The call is over and the caller has hung up. Everything expensive
         # happens here, after the agent has its 202.
         background.add_task(_process, event.call_id)
@@ -210,10 +221,15 @@ async def get_vendor(
     # Together, because this is the one call a caller is waiting on. Both are
     # free for a Latin value — `needs_translation` sends nothing — and when
     # they are not, concurrently costs one round trip rather than two.
-    english, where = await asyncio.gather(
-        translate.english_name(name),
-        translate.english_place(city or ""),
-    )
+    # Metered against the call, when the agent told us which one. This is the
+    # one provider call a caller is actually waiting on, so its latency here is
+    # not merely a cost signal — it is the number that decides whether the
+    # 0.8s budget on the agent's side is being met.
+    with meter.for_call(call_id):
+        english, where = await asyncio.gather(
+            translate.english_name(name),
+            translate.english_place(city or ""),
+        )
 
     if brain.looks_like_a_category(english):
         return VendorReply(

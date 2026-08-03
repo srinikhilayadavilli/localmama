@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from ..config import settings
 from ..logger import get_logger
-from . import translit
+from . import meter, translit
 
 logger = get_logger("localmama.translate")
 
@@ -83,21 +83,36 @@ def needs_translation(text: str) -> bool:
 
 
 async def _post(url: str, payload: dict, timeout: float) -> dict:
-    """One Sarvam call. Returns {} for every failure — never raises."""
+    """One Sarvam call. Returns {} for every failure — never raises.
+
+    The single choke point for both endpoints, and therefore the one place
+    worth metering: Sarvam bills per character of input, and the character
+    count is right here in the payload. A failure is recorded as an attempt
+    that consumed nothing, so a degrading provider shows up as a run of
+    not-ok rows rather than as an absence of rows.
+    """
     import httpx
 
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                url,
-                headers={"api-subscription-key": settings.sarvam_api_key},
-                json=payload,
-            )
-            response.raise_for_status()
-            return response.json()
-    except Exception as exc:  # noqa: BLE001 - a conversion must never end a call
-        logger.warning("sarvam %s failed (%s)", url.rsplit("/", 1)[-1], exc)
-        return {}
+    operation = url.rsplit("/", 1)[-1]
+    characters = len(payload.get("input") or "")
+    with meter.metered("sarvam", "characters", model=payload.get("model") or "",
+                       operation=operation) as measured:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    url,
+                    headers={"api-subscription-key": settings.sarvam_api_key},
+                    json=payload,
+                )
+                response.raise_for_status()
+                measured.succeeded(characters)
+                return response.json()
+        except Exception as exc:  # noqa: BLE001 - a conversion must never end a call
+            # Zero characters billed: a request that never landed is not
+            # charged for. The row still exists, carrying the error.
+            measured.failed(0, repr(exc))
+            logger.warning("sarvam %s failed (%s)", operation, exc)
+            return {}
 
 
 async def to_english(text: str, *, timeout: float | None = None) -> str:
