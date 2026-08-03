@@ -35,7 +35,7 @@ from contract import CapturedField
 
 from .config import settings
 from .logger import get_logger
-from .services import brain, translate, whatsapp
+from .services import brain, meter, translate, whatsapp
 from .services.entity_extractor import canonical_city, extract, format_name
 from .services.extraction import FOR_FIELD
 from .services.grounding import score as ground_score
@@ -262,6 +262,15 @@ async def process(call_id: str) -> dict | None:
     Idempotent: safe to re-run on any call, which is what makes a failed
     pipeline recoverable — fix the bug, replay the call_id.
     """
+    # Everything below bills against this call: the Sarvam round trips and the
+    # WhatsApp send are as much a part of what a lead costs as the model is.
+    # Scoped here rather than passed down, so a transliterator goes on taking a
+    # string and returning one. See `services/meter.py`.
+    with meter.for_call(call_id):
+        return await _process(call_id)
+
+
+async def _process(call_id: str) -> dict | None:
     lead = store.get_lead(call_id)
     if lead is None:
         logger.warning("no lead row for %s; nothing to process", call_id[:8])

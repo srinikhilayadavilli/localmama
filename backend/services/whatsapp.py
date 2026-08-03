@@ -30,6 +30,7 @@ import httpx
 
 from ..config import settings
 from ..logger import get_logger
+from . import meter
 
 logger = get_logger("localmama.whatsapp")
 
@@ -110,10 +111,28 @@ def _message_id(body: dict) -> str:
 
 
 async def _post(payload: dict, attempts: int = 3) -> dict:
+    """Send, retrying. Metered as one billable message, not one per attempt.
+
+    The provider charges for a conversation that was delivered, so a run of
+    failed attempts costs nothing and a success costs one — which is why the
+    quantity is set at the outcome rather than in the loop. The attempt count
+    is not lost: a send that took three tries shows up in the latency on the
+    row, and a send that never worked shows up as not-ok with the last error.
+    """
     headers = {
         "Authorization": f"Bearer {settings.whatsapp_api_key}",
         "Content-Type": "application/json",
     }
+    with meter.metered("campaignbot", "messages", operation="handoff") as measured:
+        result = await _attempt(payload, headers, attempts)
+        if result.get("ok"):
+            measured.succeeded(1)
+        else:
+            measured.failed(0, str(result.get("error") or "")[:300])
+        return result
+
+
+async def _attempt(payload: dict, headers: dict, attempts: int) -> dict:
     err = ""
     for attempt in range(1, attempts + 1):
         try:

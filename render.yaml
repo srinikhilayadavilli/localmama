@@ -39,6 +39,22 @@ services:
         value: "0.75"
       - key: TRANSCRIPT_RETENTION_DAYS
         value: "30"
+      # Gates /metrics and /v1/ops/* — the unit economics. A separate secret
+      # from AGENT_TOKEN because they are different principals: the agent files
+      # leads, a scraper reads aggregates, and rotating one must not silence
+      # the other. Unset refuses the ops surface rather than opening it.
+      - key: OPS_TOKEN
+        generateValue: true
+      # Display only. Every stored price is USD, because that is what providers
+      # bill in; nothing stored is ever converted, so moving this cannot
+      # restate history.
+      - key: INR_PER_USD
+        value: "88"
+      # The per-response turn series is the largest thing the observability
+      # schema writes and its value is diagnostic, which decays in days. The
+      # usage ledger itself is never swept — it is the billing record.
+      - key: TURN_RETENTION_DAYS
+        value: "90"
       - key: LOG_LEVEL
         value: INFO
 

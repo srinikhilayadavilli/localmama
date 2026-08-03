@@ -123,6 +123,117 @@ def merge_raw(call_id: str, field: CapturedField, value: str) -> None:
         conn.commit()
 
 
+def record_usage(call_id: str, source: str, records: list) -> int:
+    """Store what a call consumed. Returns rows written. Never raises.
+
+    Upsert rather than insert, because the agent's records are whole-call
+    *totals* keyed on ref='session'. A retried `call.ended` must restate them,
+    not add a second call's worth — so quantity is replaced, not summed. The
+    backend's own rows carry a unique ref each and so never collide.
+
+    Best-effort by construction. This runs after the lead is already durable,
+    and a cost number is never worth failing an event that carries a lead.
+    """
+    if not records:
+        return 0
+    tuples = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(records))
+    params: list[Any] = []
+    for r in records:
+        params += [call_id, r.ref, source, r.provider, r.model, r.operation,
+                   r.unit.value if hasattr(r.unit, "value") else str(r.unit),
+                   float(r.quantity), bool(getattr(r, "estimated", False))]
+    try:
+        with db.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO localmama.usage"
+                    " (call_id, ref, source, provider, model, operation, unit,"
+                    "  quantity, estimated)"
+                    f" VALUES {tuples}"
+                    " ON CONFLICT (call_id, ref, provider, model, operation, unit)"
+                    " DO UPDATE SET quantity = EXCLUDED.quantity,"
+                    "               estimated = EXCLUDED.estimated",
+                    params,
+                )
+            conn.commit()
+        return len(records)
+    except Exception as exc:  # noqa: BLE001 - the lead is already stored
+        logger.warning("could not record usage for %s: %s", call_id[:8], exc)
+        return 0
+
+
+def record_turns(call_id: str, turns: list) -> int:
+    """Store the per-response series. Returns rows written. Never raises.
+
+    `DO NOTHING` rather than an update: a turn is immutable once it happened,
+    and the only way the same (call_id, ref) arrives twice is a retried
+    `call.ended` carrying the identical row.
+    """
+    if not turns:
+        return 0
+    tuples = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(turns))
+    params: list[Any] = []
+    for t in turns:
+        params += [call_id, t.ref, float(t.at), float(t.ttft), float(t.duration),
+                   int(t.input_tokens), int(t.cached_tokens), int(t.output_tokens),
+                   bool(t.cancelled)]
+    try:
+        with db.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO localmama.call_turns"
+                    " (call_id, ref, at, ttft, duration, input_tokens,"
+                    "  cached_tokens, output_tokens, cancelled)"
+                    f" VALUES {tuples}"
+                    " ON CONFLICT (call_id, ref) DO NOTHING",
+                    params,
+                )
+            conn.commit()
+        return len(turns)
+    except Exception as exc:  # noqa: BLE001 - diagnostics, not the lead
+        logger.warning("could not record turns for %s: %s", call_id[:8], exc)
+        return 0
+
+
+def record_service_call(
+    call_id: str | None, ref: str, provider: str, unit: str, quantity: float,
+    *, model: str = "", operation: str = "", ok: bool = True,
+    latency_ms: int = 0, error: str = "",
+) -> None:
+    """One provider call the backend made. Never raises.
+
+    Failures are recorded too, and with their own quantity. A translator that
+    times out still consumed nothing and cost nothing — but the *attempt* is
+    the thing that shows a provider degrading, and a table that only holds
+    successes is a table where an outage looks like a quiet afternoon.
+
+    `call_id` may be absent for work not tied to a call, in which case there is
+    nothing to attribute and nothing is written; the caller's own logs still
+    have it.
+    """
+    if not call_id:
+        return
+    try:
+        with db.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO localmama.usage"
+                    " (call_id, ref, source, provider, model, operation, unit,"
+                    "  quantity, ok, latency_ms, error)"
+                    " VALUES (%s, %s, 'backend', %s, %s, %s, %s, %s, %s, %s, %s)"
+                    " ON CONFLICT (call_id, ref, provider, model, operation, unit)"
+                    " DO UPDATE SET quantity = EXCLUDED.quantity, ok = EXCLUDED.ok,"
+                    "               latency_ms = EXCLUDED.latency_ms,"
+                    "               error = EXCLUDED.error",
+                    (call_id, ref, provider, model, operation, unit,
+                     max(0.0, float(quantity)), ok, int(latency_ms), error[:300] or None),
+                )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001 - metering never breaks the pipeline
+        logger.warning("could not record a %s call for %s: %s",
+                       provider, call_id[:8], exc)
+
+
 def get_lead(call_id: str) -> dict | None:
     with db.cursor() as cur:
         cur.execute(
@@ -311,12 +422,29 @@ def pending_handoffs(limit: int = 50) -> list[dict]:
 
 
 def expire_transcripts() -> int:
-    """Clear transcripts past the retention window. Returns rows cleared.
+    """Clear transcripts past the retention window. Returns rows redacted.
 
     A transcript is everything the caller said, which is personal data under
     the DPDP Act. It is needed for the confidence audit and for diagnosing a
     bad lead, and after that it is a liability — so it is cleared while the
     lead itself, which is the business record, is kept.
+
+    **Both copies.** The transcript is stored twice: assembled onto the lead
+    row, and again inside the `call.ended` payload in the raw event log. For a
+    long time only the first was swept, so this function reported success, the
+    lead row genuinely lost its transcript, and a complete copy of every word
+    every caller had said stayed in `call_events` forever. A deletion that
+    leaves the data in the next table over is worse than no deletion, because
+    it stops anyone from looking again.
+
+    The event rows are redacted, not deleted: `event_id` is the deduplication
+    key, and an event whose row has gone would read as new if it were ever
+    replayed. Nothing reads these payloads — they exist for deduplication and
+    for forensics on a lead that came out wrong — so removing one key from them
+    costs nothing that is used.
+
+    Both statements run in one transaction. Half a redaction is the state this
+    whole function exists to get out of.
     """
     days = settings.transcript_retention_days
     if days <= 0:
@@ -331,10 +459,27 @@ def expire_transcripts() -> int:
                     (days,),
                 )
                 cleared = cur.rowcount
+                # Keyed on `received_at`, which is on this table, rather than
+                # joining the lead's `ended_at`. Simpler, indexable — and it
+                # also catches the events of a call that never closed, which an
+                # `ended_at` join would leave behind forever precisely because
+                # that column is null.
+                cur.execute(
+                    "UPDATE localmama.call_events"
+                    " SET payload = jsonb_set(payload, '{transcript}', '[]'::jsonb)"
+                    " WHERE jsonb_exists(payload, 'transcript')"
+                    "   AND payload->'transcript' <> '[]'::jsonb"
+                    "   AND received_at < now() - make_interval(days => %s)",
+                    (days,),
+                )
+                redacted = cur.rowcount
             conn.commit()
-        if cleared:
-            logger.info("cleared %d transcript(s) past %d-day retention", cleared, days)
-        return cleared
+        if cleared or redacted:
+            logger.info(
+                "cleared %d transcript(s) and redacted %d event payload(s) "
+                "past %d-day retention", cleared, redacted, days,
+            )
+        return cleared + redacted
     except Exception as exc:  # noqa: BLE001
         logger.warning("transcript expiry failed: %s", exc)
         return 0

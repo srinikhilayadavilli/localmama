@@ -33,6 +33,7 @@ from . import telephony
 from .backend_client import EventQueue
 from .config import settings, startup_problems
 from .logger import get_logger, setup_logging
+from .metering import Meter
 from .prompts.flow import instructions
 from .prompts.voice_style import GREETING_INSTRUCTION, GREETING_STT_PROMPT
 from .tools import Recorder
@@ -155,11 +156,13 @@ async def run_session(ctx: JobContext, participant) -> None:  # noqa: ANN001
     events = EventQueue()
     events.start()
 
+    meter = Meter(started_mono, transcription_model=settings.openai_stt_model)
     recorder = Recorder(
         events,
         caller_phone=telephony.caller_id(participant) or None,
         dialled=telephony.dialled_number(participant) or None,
         started_mono=started_mono,
+        meter=meter,
     )
     s = recorder.session
     recorder.announce_start(AGENT_VERSION)
@@ -176,6 +179,23 @@ async def run_session(ctx: JobContext, participant) -> None:  # noqa: ANN001
     # The tools are the ONLY route from speech to a lead.
     session = AgentSession(llm=model)
     agent = Agent(instructions=instructions(), tools=recorder.build_tools())
+
+    # What the call costs. Both handlers are dictionary writes on events the
+    # framework already emits, and both swallow their own errors — see
+    # `metering.py` for why the ledger and the turn series come from two
+    # different channels rather than one.
+    @session.on("session_usage_updated")
+    def on_usage(event) -> None:  # noqa: ANN001
+        meter.on_usage(event.usage)
+
+    # Subscribing to this logs a deprecation warning, once per call. That is
+    # expected and the trade is deliberate: this is the only channel carrying a
+    # per-response token count and TTFT, which is what identifies WHICH turn
+    # made a call expensive. Nothing billable depends on it — if a future SDK
+    # drops it, the turn series goes empty and every cost stays correct.
+    @session.on("metrics_collected")
+    def on_metrics(event) -> None:  # noqa: ANN001
+        meter.on_metrics(event.metrics)
 
     # The gap the caller actually feels. Nothing else measures it: the model
     # does its own turn detection and audio, so LiveKit emits no EOU or TTS

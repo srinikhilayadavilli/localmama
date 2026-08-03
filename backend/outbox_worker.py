@@ -26,10 +26,10 @@ import argparse
 import asyncio
 import sys
 
-from . import db, store
+from . import costing, db, store
 from .config import settings
 from .logger import get_logger, setup_logging
-from .services import brain, whatsapp
+from .services import brain, meter, whatsapp
 
 logger = get_logger("localmama.outbox")
 
@@ -47,11 +47,15 @@ async def drain(limit: int = 50) -> tuple[int, int]:
             f"{v['title']} {brain.spoken_phone(v.get('phone'))}".strip()
             for v in vendors if v.get("title") and v.get("phone")
         )
-        result = await whatsapp.send(
-            row["caller_phone"],
-            name=row.get("name"), service=row.get("service"), city=row.get("city"),
-            options=options, attempts=1,
-        )
+        # Attributed to the call it is owed to, so a lead that took nine
+        # sweeps to deliver carries nine attempts against its own cost rather
+        # than against nothing.
+        with meter.for_call(row["call_id"]):
+            result = await whatsapp.send(
+                row["caller_phone"],
+                name=row.get("name"), service=row.get("service"), city=row.get("city"),
+                options=options, attempts=1,
+            )
         ok = bool(result.get("ok"))
         error = "" if ok else str(result.get("reason") or result.get("error") or "")
         store.mark_whatsapp(row["call_id"], ok, error)
@@ -96,6 +100,7 @@ async def one_pass() -> None:
         logger.info("sweep: recovered %d, sent %d, still owed %d",
                     recovered, sent, failed)
     store.expire_transcripts()
+    costing.prune_turns()
 
 
 async def forever() -> None:

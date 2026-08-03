@@ -13,6 +13,9 @@ from .schema import (
     Language,
     MatchKind,
     TranscriptTurn,
+    TurnMetric,
+    Unit,
+    UsageRecord,
     VendorReply,
 )
 
@@ -29,5 +32,8 @@ __all__ = [
     "Language",
     "MatchKind",
     "TranscriptTurn",
+    "TurnMetric",
+    "Unit",
+    "UsageRecord",
     "VendorReply",
 ]

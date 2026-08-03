@@ -150,6 +150,103 @@ class CallCaptured(_Event):
     interpreted: str | None = None
 
 
+class Unit(str, Enum):
+    """What a provider actually bills for.
+
+    A vocabulary rather than free text, because this is the join key against
+    the rate card: a producer writing "audio_in" and a rate card saying
+    "audio_input_tokens" is a call that silently costs nothing.
+
+    **Cached token counts are exclusive, not inclusive.** The provider reports
+    them the other way round — OpenAI's `input_token_details.audio_tokens` is
+    the total and `cached_tokens_details.audio_tokens` is the subset of it that
+    was cached — and the two are priced 80x apart ($32 against $0.40 per 1M).
+    Whoever produces these records subtracts, so that summing every audio unit
+    here reproduces the invoice rather than eighty times it. See
+    `agent/metering.py`.
+    """
+
+    #: Speech-to-speech and transcription models, billed per token by modality.
+    AUDIO_INPUT_TOKENS = "audio_input_tokens"
+    AUDIO_INPUT_CACHED_TOKENS = "audio_input_cached_tokens"
+    AUDIO_OUTPUT_TOKENS = "audio_output_tokens"
+    TEXT_INPUT_TOKENS = "text_input_tokens"
+    TEXT_INPUT_CACHED_TOKENS = "text_input_cached_tokens"
+    TEXT_OUTPUT_TOKENS = "text_output_tokens"
+    #: Wall-clock, for anything metered by the minute: the LiveKit agent
+    #: session and the SIP leg. Seconds rather than minutes because that is
+    #: what we can measure; the rate card does the conversion.
+    SECONDS = "seconds"
+    #: Sarvam bills translation and transliteration per character.
+    CHARACTERS = "characters"
+    #: One WhatsApp template send.
+    MESSAGES = "messages"
+
+
+class UsageRecord(BaseModel):
+    """One metered quantity: what was used, of what, how much.
+
+    Deliberately units and not money. A price is a fact about the day the call
+    happened, and a rate card that turns out to have been wrong — or a question
+    like "what would last month have cost on realtime-mini?" — can only be
+    answered if the quantity survived. So the agent ships what it counted and
+    the backend prices it against an effective-dated card.
+
+    `ref` scopes deduplication within a call. The agent may retry `call.ended`
+    freely, so these are upserted on (call_id, ref, provider, model, unit) and
+    the quantity is replaced rather than added — it is a running total for the
+    call, not a delta.
+    """
+
+    #: "openai" | "livekit" | "sarvam" | "campaignbot".
+    provider: str = Field(min_length=1, max_length=40)
+    #: The billable variant, where the provider has more than one. Empty when
+    #: the provider prices a service rather than a model (a SIP minute).
+    model: str = Field(default="", max_length=80)
+    #: What produced it, for attribution rather than pricing: "realtime",
+    #: "transcription", "translate", "handoff".
+    operation: str = Field(default="", max_length=40)
+    unit: Unit
+    #: Never negative. A provider that reports a smaller total than it did a
+    #: moment ago is a bug in the meter, not a refund.
+    quantity: float = Field(ge=0.0)
+    #: Deduplication scope. "session" for a whole-call total.
+    ref: str = Field(default="session", max_length=80)
+    #: False when a provider or the framework reported this quantity, True when
+    #: we derived it. Carried all the way to the dashboard rather than being
+    #: quietly mixed in, because a total that is 90% measured and 10% inferred
+    #: is a different number from one that is wholly measured, and the person
+    #: deciding whether to switch models needs to know which they are reading.
+    #: See `agent/metering.py` for the one thing currently estimated and why.
+    estimated: bool = False
+
+
+class TurnMetric(BaseModel):
+    """One model response: what it cost in context, and what it cost in time.
+
+    Separate from `UsageRecord` because it answers a different question. The
+    usage ledger says what the call cost; this says *which turn* made it
+    expensive — and on a realtime model that is the whole diagnostic, because
+    input tokens are re-billed against the growing conversation on every single
+    response. A call that costs three times what it should usually looks like a
+    normal call with a context that never stopped growing.
+    """
+
+    #: The provider's response id. Also the dedup key.
+    ref: str = Field(max_length=80)
+    at: float = Field(ge=0.0, description="Seconds since the call was answered.")
+    #: Time to first audio token. -1 when the response carried no audio, which
+    #: is not the same as zero and must not be averaged in as though it were.
+    ttft: float = -1.0
+    duration: float = Field(default=0.0, ge=0.0)
+    input_tokens: int = Field(default=0, ge=0)
+    cached_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    #: A barged-in response is still billed for what it generated, and a call
+    #: full of them is a turn-detection problem showing up as a cost problem.
+    cancelled: bool = False
+
+
 class TranscriptTurn(BaseModel):
     """One side of the conversation, as transcribed.
 
@@ -183,6 +280,24 @@ class CallEnded(_Event):
     #: Seconds between the caller finishing and the agent starting to reply.
     #: The only latency number that reflects what the caller actually felt.
     turn_gaps: list[float] = Field(default_factory=list)
+    #: What this call consumed, in units. Optional, and empty from an agent
+    #: built before metering existed.
+    #:
+    #: On `call.ended` rather than as an event of its own, and that is a
+    #: compatibility decision rather than a tidiness one. `EventBatch` is a
+    #: discriminated union, so pydantic rejects a batch containing ANY unknown
+    #: `type` — a new event type deployed to the agent before the backend would
+    #: 422 the whole batch and take this call's `call.ended` down with it,
+    #: losing the lead to add a cost number. An added optional field is safe in
+    #: either deploy order: an old backend ignores it, a new backend sees [].
+    #:
+    #: The cost of putting it here is that a call whose `call.ended` never
+    #: arrives has no usage at all. That call has no lead either, so it is
+    #: already a failure we surface — but it must be surfaced as *unmetered*
+    #: rather than counted as free. See `costing.unmetered_calls`.
+    usage: list[UsageRecord] = Field(default_factory=list)
+    #: Per-response context and latency. Empty when metering is off.
+    turns: list[TurnMetric] = Field(default_factory=list, max_length=500)
     ended_at: datetime
 
 
