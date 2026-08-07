@@ -39,9 +39,10 @@ class Settings:
 
     # --- Postgres (Neon) ---
     database_url: str = field(default_factory=lambda: _env("DATABASE_URL"))
-    #: Render runs the web service and the outbox worker as separate processes,
+    #: Render runs the web service and the outbox sweep as separate processes,
     #: each with its own pool. Neon's connection ceiling is the constraint, not
-    #: this service's concurrency.
+    #: this service's concurrency. The sweep is a cron job, so its pool exists
+    #: only for the seconds a pass takes rather than around the clock.
     db_pool_min: int = field(default_factory=lambda: int(_env("DB_POOL_MIN", "1")))
     db_pool_max: int = field(default_factory=lambda: int(_env("DB_POOL_MAX", "8")))
 
@@ -130,6 +131,11 @@ class Settings:
     )
 
     # --- outbox ---
+    #: Drives `outbox_worker.forever()`, which is the local and ad-hoc path.
+    #: In production the sweep is a Render cron job running `--once`, so the
+    #: schedule in `render.yaml` is the interval and this value is not read.
+    #: Both are five minutes; change them together or the deployed cadence
+    #: silently stops matching what this file says it is.
     outbox_sweep_seconds: float = field(
         default_factory=lambda: float(_env("OUTBOX_SWEEP_SECONDS", "300"))
     )

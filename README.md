@@ -26,7 +26,8 @@ The agent is the UI. Everything else is backend.
      Render ────────│  BACKEND           │  FastAPI
                     │  backend/          │  normalise · audit · match · notify
                     ├────────────────────┤
-                    │  outbox worker     │  WhatsApp retries, transcript expiry
+                    │  outbox sweep      │  WhatsApp retries, transcript expiry
+                    │  (cron, every 5m)  │  same image, own process
                     └─────────┬──────────┘
                               │
                     ┌─────────▼──────────┐
@@ -180,12 +181,20 @@ end to end. None of it was testable without dialling in before the split.
 **Agent → LiveKit Cloud.** `python -m agent.worker start`. The SIP trunk and
 dispatch rule are in [setup/README.md](setup/README.md).
 
-**Backend → Render**, via `render.yaml`: a web service and a background worker
-off one image, `preDeployCommand: python -m backend.migrate`.
+**Backend → Render**, via `render.yaml`: a web service and a cron job off one
+image, `preDeployCommand: python -m backend.migrate`.
 
 Migrations run **once per deploy, by one process**. They used to be issued
 lazily from inside a live call's save path, once per job process — concurrent
 DDL against Neon at the exact moment a caller was hanging up.
+
+The sweep is a **cron job on `*/5`**, not an always-on worker and not a task
+inside the API. It runs `python -m backend.outbox_worker --once`, which is one
+pass that exits. A worker bills by the month to spend most of it asleep; the
+API is the wrong host because the sweep's slowest moment — a provider down for
+hours, with a backlog of owed leads — is retry-heavy work with a synchronous
+connection pool, and `POST /v1/events` arrives from a caller who is mid-call.
+That is the arrangement this code was moved out of once already.
 
 ### Environment
 
