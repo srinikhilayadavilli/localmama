@@ -1,9 +1,16 @@
 # Render blueprint for the Local Mama lead backend.
 #
-# Two processes off one image. They are separated because their failure modes
-# are different: the API must stay responsive for the agent, and the sweep does
-# slow, retry-heavy work against a provider that is sometimes down for hours.
-# Inside the agent these shared a process with a live phone call.
+# A web service and a cron job off one image. They are separated because their
+# failure modes are different: the API must stay responsive for the agent, and
+# the sweep does slow, retry-heavy work against a provider that is sometimes
+# down for hours. Inside the agent these shared a process with a live phone
+# call.
+#
+# The sweep is a cron job rather than a background worker because it is not a
+# daemon — it is one pass on a timer, and it already exits cleanly after one.
+# An always-on worker bills by the month and holds a Neon connection pool
+# around the clock to sleep in; a cron job bills by the second and holds one
+# for the few seconds a pass takes.
 #
 # The agent itself is NOT here — it deploys to LiveKit Cloud.
 
@@ -58,12 +65,22 @@ services:
       - key: LOG_LEVEL
         value: INFO
 
-  - type: worker
+  - type: cron
     name: localmama-outbox
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
     region: singapore
+    # The instance size a run executes at, not a monthly reservation: a cron
+    # job is billed for the seconds it runs.
     plan: starter
-    dockerCommand: python -m backend.outbox_worker
+    # The deployed sweep interval. `OUTBOX_SWEEP_SECONDS` still drives the
+    # `forever()` loop for local runs; in production this schedule is the
+    # interval, so the two are kept at the same five minutes deliberately.
+    schedule: "*/5 * * * *"
+    # `--once` and not the daemon: Render starts the container per run.
+    # Overlapping runs are safe anyway — owed rows are claimed with
+    # `FOR UPDATE SKIP LOCKED`, so two passes take disjoint batches rather
+    # than sending one customer the same message twice.
+    dockerCommand: python -m backend.outbox_worker --once
     envVars: *backend_env
