@@ -66,7 +66,12 @@ services:
         value: INFO
 
   - type: cron
-    name: localmama-outbox
+    # Not `localmama-outbox`: that name belonged to the background worker this
+    # replaces, and for a while both existed, suspended, distinguishable only
+    # by a type badge in a list. An unreadable service list is a service list
+    # someone deletes to clear up. The cadence is in the name because the
+    # schedule below is the only place it is otherwise written down.
+    name: localmama-sweep-5m
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
