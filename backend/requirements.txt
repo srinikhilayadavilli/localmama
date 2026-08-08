@@ -19,5 +19,5 @@ python-dotenv==1.0.1
 psycopg[binary]==3.2.3
 psycopg-pool==3.2.4
 
-# Sarvam (translate/transliterate) and CampaignBot (WhatsApp).
+# Sarvam (translate/transliterate) and the lead webhook.
 httpx==0.28.1

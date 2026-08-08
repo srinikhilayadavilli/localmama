@@ -55,14 +55,14 @@ def _insert(sql: str, params: tuple = ()) -> None:
         conn.execute(sql, params)
 
 
-def _lead(call_id: str, *, service=None, whatsapp="pending", status="completed",
+def _lead(call_id: str, *, service=None, handoff="pending", status="completed",
           ended_minutes_ago: int = 5) -> None:
     ended = datetime.now(timezone.utc) - timedelta(minutes=ended_minutes_ago)
     _insert(
         "INSERT INTO localmama.leads (call_id, agent_id, caller_phone, service,"
-        " status, whatsapp_status, started_at, ended_at, processed_at)"
+        " status, handoff_status, started_at, ended_at, processed_at)"
         " VALUES (%s, 'localmama', '+91999', %s, %s, %s, %s, %s, now())",
-        (call_id, service, status, whatsapp,
+        (call_id, service, status, handoff,
          ended - timedelta(minutes=3), ended),
     )
 
@@ -182,10 +182,10 @@ def test_cost_per_delivered_lead_is_higher_than_cost_per_call(priced):
     """The distinction the page is built around. Three calls, one delivered:
     a lead costs three times what the per-call average suggests, and quoting
     the wrong one understates the business by the whole conversion loss."""
-    for i, (service, whatsapp) in enumerate(
+    for i, (service, handoff) in enumerate(
         [("plumber", "sent"), ("salon", "pending"), (None, "pending")]
     ):
-        _lead(f"c{i}", service=service, whatsapp=whatsapp)
+        _lead(f"c{i}", service=service, handoff=handoff)
         _usage(f"c{i}", "livekit", "seconds", 600, operation="session")
 
     economics = priced.unit_economics()
@@ -198,13 +198,13 @@ def test_cost_per_delivered_lead_is_higher_than_cost_per_call(priced):
 
 def test_delivering_nothing_reports_none_rather_than_zero(priced):
     """An hour that delivered no leads must not render as "leads are free"."""
-    _lead("c1", service="plumber", whatsapp="pending")
+    _lead("c1", service="plumber", handoff="pending")
     _usage("c1", "livekit", "seconds", 120, operation="session")
     assert priced.unit_economics()["cost_per_delivered_usd"] is None
 
 
 def test_a_call_outside_the_window_is_excluded(priced):
-    _lead("old", service="plumber", whatsapp="sent", ended_minutes_ago=60 * 40)
+    _lead("old", service="plumber", handoff="sent", ended_minutes_ago=60 * 40)
     _usage("old", "livekit", "seconds", 600, operation="session")
     assert priced.unit_economics(hours=24)["calls"] == 0
     assert priced.unit_economics(hours=24 * 3)["calls"] == 1

@@ -61,7 +61,10 @@ class Settings:
         default_factory=lambda: float(_env("TRANSLATE_TIMEOUT", "8.0"))
     )
 
-    # --- WhatsApp handoff ---
+    # --- handoff, channel 1 of 2: WhatsApp (CampaignBot) ---
+    #: Still the channel the caller actually hears from. It stays until the
+    #: webhook has been proven against a real receiver — running both is how
+    #: you find out the new one works without a customer paying for the answer.
     whatsapp_enabled: bool = field(
         default_factory=lambda: _env_bool("WHATSAPP_ENABLED", False)
     )
@@ -84,6 +87,27 @@ class Settings:
             "Our team is shortlisting the best options for you and will share "
             "them here shortly",
         )
+    )
+    #: How the message opens — the template's {{1}}. A fixed greeting rather
+    #: than the caller's name, because a name captured on a bad line is the one
+    #: field this system gets wrong outright, and a message addressed to a
+    #: stranger is worse than one addressed to nobody.
+    whatsapp_greeting: str = field(
+        default_factory=lambda: _env("WHATSAPP_GREETING", "there Mama")
+    )
+
+    # --- handoff, channel 2 of 2: the webhook ---
+    #: Where a finished lead is POSTed. Blank disables it cleanly, which is the
+    #: same shape the WhatsApp sender has: a half-configured sender that fails
+    #: on every lead is worse than an honest "not delivered".
+    webhook_url: str = field(default_factory=lambda: _env("WEBHOOK_URL"))
+    #: HMAC-SHA256 key for the signature header. Required, not optional — an
+    #: unsigned webhook is an endpoint that believes anything that reaches it,
+    #: and this one carries a caller's name and phone number.
+    webhook_secret: str = field(default_factory=lambda: _env("WEBHOOK_SECRET"))
+    #: Per attempt, not per lead. Nothing is on the line waiting for this.
+    webhook_timeout: float = field(
+        default_factory=lambda: float(_env("WEBHOOK_TIMEOUT", "10.0"))
     )
 
     # --- accuracy ---
@@ -149,6 +173,13 @@ class Settings:
         return bool(
             self.whatsapp_enabled and self.whatsapp_api_key and self.whatsapp_template_name
         )
+
+    @property
+    def webhook_available(self) -> bool:
+        """Both are required. A URL without a secret would send a caller's name
+        and phone number to an endpoint that cannot tell us from anyone else,
+        so a missing secret disables the handoff rather than weakening it."""
+        return bool(self.webhook_url and self.webhook_secret)
 
 
 settings = Settings()

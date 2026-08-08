@@ -33,10 +33,10 @@ _NOT_WORTH_RETRYING = frozenset({
     "service unverified",  # unconfirmed, and we cannot vouch for the trade
 })
 
-#: Deliberately NOT in the set above. WhatsApp being unconfigured is a state of
+#: Deliberately NOT in the set above. An unconfigured webhook is a state of
 #: this deployment, not of the lead — it changes the moment someone sets the
-#: credentials, and every lead that arrived in the meantime is still owed a
-#: message. Marking those terminal loses them permanently for a reason that
+#: URL and secret, and every lead that arrived in the meantime is still owed a
+#: delivery. Marking those terminal loses them permanently for a reason that
 #: has since gone away.
 _CONFIG_WILL_CHANGE = "not configured"
 
@@ -238,9 +238,9 @@ def get_lead(call_id: str) -> dict | None:
     with db.cursor() as cur:
         cur.execute(
             "SELECT call_id, caller_phone, dialled, language, raw, name, service,"
-            " city, status, confirmed, confidence, needs_review, vendors,"
-            " asked_vendors, service_inferred, whatsapp_status, transcript,"
-            " started_at, ended_at"
+            " service_said, city, status, confirmed, confidence, needs_review,"
+            " review_reason, vendors, asked_vendors, service_inferred,"
+            " handoff_status, transcript, started_at, ended_at"
             " FROM localmama.leads WHERE call_id = %s",
             (call_id,),
         )
@@ -248,9 +248,10 @@ def get_lead(call_id: str) -> dict | None:
     if row is None:
         return None
     cols = ["call_id", "caller_phone", "dialled", "language", "raw", "name",
-            "service", "city", "status", "confirmed", "confidence", "needs_review",
-            "vendors", "asked_vendors", "service_inferred", "whatsapp_status",
-            "transcript", "started_at", "ended_at"]
+            "service", "service_said", "city", "status", "confirmed", "confidence",
+            "needs_review", "review_reason", "vendors", "asked_vendors",
+            "service_inferred", "handoff_status", "transcript",
+            "started_at", "ended_at"]
     return dict(zip(cols, row))
 
 
@@ -288,14 +289,51 @@ def record_asked_vendor(call_id: str, title: str, phone: str,
                        call_id[:8], exc)
 
 
-def mark_whatsapp(call_id: str, ok: bool, error: str = "",
-                  message_id: str = "") -> None:
-    """Record the outcome of a handoff attempt. Never raises.
+#: The two handoff channels, and the columns each one owns.
+#:
+#: They are tracked separately and swept separately on purpose. A lead whose
+#: WhatsApp went out but whose webhook 500'd is owed the webhook and nothing
+#: else — share one status column and the next sweep messages that customer a
+#: second time to fix a problem they never had.
+#:
+#: WhatsApp is the channel the caller actually hears from and stays until the
+#: webhook is proven against a real receiver. Retiring it is then this dict
+#: entry, its columns, and `services/whatsapp.py`.
+_CHANNELS = {
+    "whatsapp": {
+        "status": "whatsapp_status", "attempts": "whatsapp_attempts",
+        "error": "whatsapp_error", "at": "whatsapp_at",
+        "detail": "whatsapp_message_id",
+    },
+    "webhook": {
+        "status": "handoff_status", "attempts": "handoff_attempts",
+        "error": "handoff_error", "at": "handoff_at",
+        "detail": "handoff_response",
+    },
+}
+
+
+def _cols(channel: str) -> dict:
+    """Column names for a channel. Raises on an unknown one rather than
+    interpolating it — these go into SQL, so the whitelist is the guard."""
+    try:
+        return _CHANNELS[channel]
+    except KeyError:
+        raise ValueError(f"unknown handoff channel {channel!r}") from None
+
+
+def mark_handoff(call_id: str, channel: str, ok: bool, error: str = "",
+                 detail: object = None) -> None:
+    """Record the outcome of one channel's attempt. Never raises.
 
     `sent` is terminal. `pending` means it is still owed and will be retried;
-    `skipped` means there was nothing to send to, or nothing to send with —
-    neither is a failure and neither improves by being retried forever.
+    `skipped` means there was nothing to deliver to, or nothing to deliver
+    with — neither is a failure and neither improves by being retried forever.
+
+    `detail` is whatever that channel has worth keeping: a provider message id
+    for WhatsApp, the receiver's HTTP status for the webhook.
     """
+    c = _cols(channel)
     status = (
         "sent" if ok
         else ("skipped" if error in _NOT_WORTH_RETRYING else "pending")
@@ -304,70 +342,87 @@ def mark_whatsapp(call_id: str, ok: bool, error: str = "",
         with db.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE localmama.leads SET whatsapp_status = %s,"
-                    " whatsapp_attempts = whatsapp_attempts + 1,"
-                    " whatsapp_error = %s, whatsapp_message_id = %s,"
-                    " whatsapp_at = now(), updated_at = now()"
+                    f"UPDATE localmama.leads SET {c['status']} = %s,"
+                    f" {c['attempts']} = {c['attempts']} + 1,"
+                    f" {c['error']} = %s, {c['detail']} = %s,"
+                    f" {c['at']} = now(), updated_at = now()"
                     " WHERE call_id = %s",
-                    (status, error or None, message_id or None, call_id),
+                    (status, error or None, detail if detail != "" else None, call_id),
                 )
             conn.commit()
     except Exception as exc:  # noqa: BLE001 - the lead is already stored
-        logger.warning("could not record whatsapp status for %s: %s", call_id[:8], exc)
+        logger.warning("could not record %s status for %s: %s",
+                       channel, call_id[:8], exc)
 
 
-def claim_owed_handoffs(limit: int = 50, stale_after_minutes: int = 10) -> list[dict]:
-    """Take ownership of owed handoffs, atomically, and return them.
+def claim_owed_handoffs(channel: str, limit: int = 50,
+                        stale_after_minutes: int = 10) -> list[dict]:
+    """Take ownership of the handoffs owed on one channel, and return them.
 
     The sweep runs unattended, and a second worker sweeping at the same moment
-    would send one customer the same message twice. So rows are claimed rather
-    than merely read: one `UPDATE ... RETURNING` moves them from `pending` to
+    would deliver one customer's lead twice. So rows are claimed rather than
+    merely read: one `UPDATE ... RETURNING` moves them from `pending` to
     `sending`, and Postgres decides who wins.
 
     Only *processed* leads are owed anything. `pending` is also the column
     default, so a lead the pipeline never reached looks identical to one whose
-    send failed — and the sweep took a call that captured nothing at all and
-    messaged the caller "here are some the service options in your area",
-    bypassing every guard in the pipeline because the pipeline had not run.
+    delivery failed — and the sweep took a call that captured nothing at all
+    and handed it on, bypassing every guard in the pipeline because the
+    pipeline had not run.
 
-    A claim that is never resolved — the process died mid-send — would strand
-    the lead in `sending` forever, so anything stuck there longer than
+    A claim that is never resolved — the process died mid-delivery — would
+    strand the lead in `sending` forever, so anything stuck there longer than
     `stale_after_minutes` is treated as owed again. That risks a duplicate in
-    the narrow window where a send succeeded but the result was never recorded;
-    a duplicate is recoverable, a lead silently never sent is not.
+    the narrow window where a delivery succeeded but the result was never
+    recorded; a duplicate is recoverable, a lead silently never sent is not.
+
+    Claimed **per channel**, so a lead whose WhatsApp landed and whose webhook
+    failed is claimed for the webhook alone. Sharing one claim across both
+    would re-send the message that already worked.
+
+    Returns the whole lead, not the four fields a template needed. The webhook
+    body carries everything the pipeline produced, so the sweep must be able to
+    build the same payload the live path does rather than a thinner one — a
+    lead delivered late should not also be a lead delivered poorer.
     """
+    c = _cols(channel)
     try:
         with db.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE localmama.leads SET whatsapp_status = 'sending',"
-                    " whatsapp_at = now()"
+                    f"UPDATE localmama.leads SET {c['status']} = 'sending',"
+                    f" {c['at']} = now()"
                     " WHERE call_id IN ("
                     "   SELECT call_id FROM localmama.leads"
                     "   WHERE agent_id = %s AND caller_phone IS NOT NULL"
                     "     AND processed_at IS NOT NULL AND service IS NOT NULL"
-                    "     AND whatsapp_attempts < %s"
-                    "     AND (whatsapp_status = 'pending'"
-                    "          OR (whatsapp_status = 'sending'"
-                    "              AND whatsapp_at < now() - make_interval(mins => %s)))"
+                    f"     AND {c['attempts']} < %s"
+                    f"     AND ({c['status']} = 'pending'"
+                    f"          OR ({c['status']} = 'sending'"
+                    f"              AND {c['at']} < now() - make_interval(mins => %s)))"
                     "   ORDER BY created_at"
                     "   FOR UPDATE SKIP LOCKED"
                     "   LIMIT %s)"
-                    " RETURNING call_id, caller_phone, name,"
-                    "           coalesce(service_said, service), city, language,"
-                    "           vendors, whatsapp_attempts",
+                    " RETURNING call_id, caller_phone, dialled, language, name,"
+                    "           service, service_said, service_inferred, city,"
+                    "           status, confirmed, confidence, needs_review,"
+                    f"           review_reason, vendors, started_at, ended_at,"
+                    f"           {c['attempts']}",
                     (settings.brain_agent_id, settings.outbox_max_attempts,
                      stale_after_minutes, limit),
                 )
-                cols = ["call_id", "caller_phone", "name", "service", "city",
-                        "language", "vendors", "attempts"]
+                cols = ["call_id", "caller_phone", "dialled", "language", "name",
+                        "service", "service_said", "service_inferred", "city",
+                        "status", "confirmed", "confidence", "needs_review",
+                        "review_reason", "vendors", "started_at", "ended_at",
+                        "attempts"]
                 claimed = [dict(zip(cols, r)) for r in cur.fetchall()]
             conn.commit()
         if claimed:
-            logger.info("outbox: claimed %d owed handoff(s)", len(claimed))
+            logger.info("outbox: claimed %d lead(s) owed a %s", len(claimed), channel)
         return claimed
     except Exception as exc:  # noqa: BLE001 - a sweep must never kill the worker
-        logger.warning("could not claim from the outbox: %s", exc)
+        logger.warning("could not claim %s from the outbox: %s", channel, exc)
         return []
 
 
@@ -400,16 +455,17 @@ def unprocessed_leads(limit: int = 50) -> list[str]:
         return []
 
 
-def pending_handoffs(limit: int = 50) -> list[dict]:
-    """Leads still owed a WhatsApp message, oldest first. Read-only."""
+def pending_handoffs(channel: str, limit: int = 50) -> list[dict]:
+    """Leads still owed a delivery on one channel, oldest first. Read-only."""
+    c = _cols(channel)
     try:
         with db.cursor() as cur:
             cur.execute(
                 "SELECT call_id, caller_phone, name, service, city,"
-                " whatsapp_status, whatsapp_attempts, whatsapp_error"
+                f" {c['status']}, {c['attempts']}, {c['error']}"
                 " FROM localmama.leads"
-                " WHERE agent_id = %s AND whatsapp_status IN ('pending', 'sending')"
-                "   AND caller_phone IS NOT NULL AND whatsapp_attempts < %s"
+                f" WHERE agent_id = %s AND {c['status']} IN ('pending', 'sending')"
+                f"   AND caller_phone IS NOT NULL AND {c['attempts']} < %s"
                 " ORDER BY created_at LIMIT %s",
                 (settings.brain_agent_id, settings.outbox_max_attempts, limit),
             )

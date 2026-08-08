@@ -1,4 +1,4 @@
-"""When a caller gets a WhatsApp message, and when they must not.
+"""When a lead is handed off, and when it must not be.
 
 Written because a real phone received:
 
@@ -6,7 +6,8 @@ Written because a real phone received:
     As Requested, here are some the service options in your area:
 
 That was a caller who picked a language and hung up. The lead is worth keeping;
-the automatic message had nothing to say.
+the automatic message had nothing to say. The channel is a webhook now — the
+guards are the same, because they were never about WhatsApp.
 """
 
 from __future__ import annotations
@@ -16,10 +17,16 @@ import pytest
 from backend import pipeline
 
 
+class _Recorded(list):
+    """A list that also carries the per-channel breakdown."""
+    by_channel: dict
+
+
 class FakeStore:
     def __init__(self, lead: dict) -> None:
         self.lead = lead
         self.marks: list[tuple] = []
+        self.by_channel: dict[str, list] = {}
         self.updates: list[dict] = []
 
     def get_lead(self, call_id):
@@ -31,21 +38,40 @@ class FakeStore:
     def upsert_call(self, call_id, **fields):
         self.updates.append(fields)
 
-    def mark_whatsapp(self, call_id, ok, error="", message_id=""):
+    def mark_handoff(self, call_id, channel, ok, error="", detail=None):
         self.marks.append((ok, error))
+        self.by_channel.setdefault(channel, []).append((ok, error))
 
 
 @pytest.fixture()
 def sent(monkeypatch):
-    """Records every WhatsApp send the pipeline attempts."""
-    calls = []
+    """Records every handoff the pipeline attempts, on both channels.
 
-    async def _send(phone, **kw):
-        calls.append({"phone": phone, **kw})
-        return {"ok": True}
+    Indexed by channel and also flattened, so the existing assertions about
+    *whether* a lead is handed off keep reading the way they did — the guards
+    were never about WhatsApp, and neither are these tests.
+    """
+    calls = _Recorded()
+    calls_by = {"whatsapp": [], "webhook": []}
 
-    monkeypatch.setattr(pipeline.whatsapp, "send", _send)
+    async def _hook(lead, *, subject="", vendors=None, attempts=3):
+        rec = {"channel": "webhook", "phone": lead.get("caller_phone"),
+               "subject": subject,
+               "titles": [v.get("title") for v in (vendors or [])]}
+        calls_by["webhook"].append(rec)
+        return {"ok": True, "status": 200}
+
+    async def _wa(phone, *, name=None, service=None, city=None, options="", attempts=3):
+        rec = {"channel": "whatsapp", "phone": phone, "subject": service,
+               "titles": [t for t in options.split(" · ") if t]}
+        calls_by["whatsapp"].append(rec)
+        calls.append(rec)          # the flattened view the old assertions use
+        return {"ok": True, "messageId": "wamid.test"}
+
+    monkeypatch.setattr(pipeline.webhook, "send", _hook)
+    monkeypatch.setattr(pipeline.whatsapp, "send", _wa)
     monkeypatch.setattr(pipeline.brain, "matches_for_service", lambda *a, **k: [])
+    calls.by_channel = calls_by
     return calls
 
 
@@ -68,7 +94,9 @@ async def test_a_language_only_call_sends_nothing(monkeypatch, sent):
     await pipeline.process("c1")
 
     assert sent == []
-    assert store.marks == [(False, "incomplete lead")]
+    # Both channels are marked: neither is owed a lead with nothing to say.
+    assert store.by_channel["whatsapp"] == [(False, "incomplete lead")]
+    assert store.by_channel["webhook"] == [(False, "incomplete lead")]
 
 
 @pytest.mark.asyncio
@@ -95,7 +123,7 @@ async def test_a_lead_with_a_service_is_sent(monkeypatch, sent):
     await pipeline.process("c1")
 
     assert len(sent) == 1
-    assert sent[0]["service"] == "plumber"
+    assert sent[0]["subject"] == "plumber"
     assert sent[0]["phone"] == "+919739960092"
 
 
@@ -127,7 +155,8 @@ async def test_an_unverifiable_service_is_not_messaged_about(monkeypatch, sent):
     await pipeline.process("c1")
 
     assert sent == []
-    assert store.marks == [(False, "service unverified")]
+    assert store.by_channel["whatsapp"] == [(False, "service unverified")]
+    assert store.by_channel["webhook"] == [(False, "service unverified")]
 
 
 @pytest.mark.asyncio
@@ -156,7 +185,7 @@ async def test_a_confirmed_read_back_beats_a_garbled_transcript(monkeypatch, sen
     await pipeline.process("c1")
 
     assert len(sent) == 1
-    assert "Infinity Enterprises" in sent[0]["options"]
+    assert any("Infinity Enterprises" in t for t in sent[0]["titles"])
 
 
 @pytest.mark.asyncio
@@ -193,8 +222,8 @@ async def test_a_business_asked_for_by_name_leads_the_message(monkeypatch, sent)
     await pipeline.process("c1")
 
     assert len(sent) == 1
-    assert "Brimmies Cafe" in sent[0]["options"]
-    assert sent[0]["service"] == "plumber"      # the service is still the subject
+    assert any("Brimmies Cafe" in t for t in sent[0]["titles"])
+    assert sent[0]["subject"] == "plumber"      # the service is still the subject
 
 
 @pytest.mark.asyncio
@@ -212,8 +241,8 @@ async def test_a_business_carries_the_message_with_no_service(monkeypatch, sent)
     await pipeline.process("c1")
 
     assert len(sent) == 1
-    assert sent[0]["service"] == "Brimmies Cafe"
-    assert "Brimmies Cafe" in sent[0]["options"]
+    assert sent[0]["subject"] == "Brimmies Cafe"
+    assert any("Brimmies Cafe" in t for t in sent[0]["titles"])
 
 
 @pytest.mark.asyncio
@@ -232,7 +261,7 @@ async def test_a_business_survives_an_unverifiable_service(monkeypatch, sent):
     await pipeline.process("c1")
 
     assert len(sent) == 1
-    assert sent[0]["service"] == "Clean Mates"
+    assert sent[0]["subject"] == "Clean Mates"
 
 
 @pytest.mark.asyncio
@@ -264,8 +293,8 @@ async def test_the_message_says_what_the_caller_said(monkeypatch, sent):
     await pipeline.process("c1")
 
     assert len(sent) == 1
-    assert "parlo" in sent[0]["service"].lower()
-    assert sent[0]["service"].lower() != "salon"
+    assert "parlo" in sent[0]["subject"].lower()
+    assert sent[0]["subject"].lower() != "salon"
     # …while the lead still stores the canonical label, which is what matched.
     assert store.updates[-1]["service"] == "salon"
 
@@ -299,7 +328,7 @@ async def test_the_understood_trade_is_used_when_their_words_match_nothing(
     await pipeline.process("c1")
 
     assert len(sent) == 1
-    assert "Infinity Enterprises" in sent[0]["options"]
+    assert any("Infinity Enterprises" in t for t in sent[0]["titles"])
     # …and flagged, because nobody actually said "plumber".
     assert store.updates[-1]["needs_review"] is True
     assert "understood as" in store.updates[-1]["review_reason"]
@@ -347,11 +376,11 @@ async def test_a_lead_we_cannot_message_still_reaches_a_human(monkeypatch, sent)
     assert "not messaged" in store.updates[-1]["review_reason"]
 
 
-def test_an_unconfigured_whatsapp_is_retried_not_written_off():
-    """WhatsApp being unconfigured is a state of the deployment, not of the
-    lead. It changes the moment someone sets the credentials, and every lead
-    that arrived meanwhile is still owed a message — so it must not be
-    terminal."""
+def test_an_unconfigured_webhook_is_retried_not_written_off():
+    """An unconfigured webhook is a state of the deployment, not of the lead.
+    It changes the moment someone sets WEBHOOK_URL and WEBHOOK_SECRET, and
+    every lead that arrived meanwhile is still owed a delivery — so it must
+    not be terminal."""
     from backend.store import _NOT_WORTH_RETRYING
 
     assert "not configured" not in _NOT_WORTH_RETRYING

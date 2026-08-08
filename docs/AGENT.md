@@ -27,7 +27,7 @@ Everything else belongs to the backend.
 |---|---|
 | Translate or transliterate | It cost up to 6s of live call in network I/O, and a value normalised at capture can never be re-normalised later. |
 | Match the vendor catalogue | Needs the database. Runs after the caller has hung up, where latency is free. |
-| Send WhatsApp | Same. Also needs retries, an outbox, and a scheduler. |
+| Deliver the lead | Same. Also needs retries, an outbox, and a scheduler. |
 | Store anything durably | It has no database driver in its image at all. |
 | Decide whether a value is *plausible* | Refusing values in a tool put callers in re-prompt loops at the moment they expected to hang up. |
 

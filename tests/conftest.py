@@ -23,7 +23,8 @@ from backend.config import settings as backend_settings
 _BLANKED = [
     (backend_settings, "database_url"),    # brain + lead store report unavailable
     (backend_settings, "sarvam_api_key"),  # translate falls back to the offline table
-    (backend_settings, "whatsapp_api_key"),
+    (backend_settings, "webhook_url"),      # the handoff reports "not configured"
+    (backend_settings, "webhook_secret"),   # …and never signs or posts anything
     (agent_settings, "backend_url"),       # the agent's event queue stays local
     (agent_settings, "backend_token"),
 ]

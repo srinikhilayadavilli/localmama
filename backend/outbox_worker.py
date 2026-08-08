@@ -1,4 +1,4 @@
-"""Retry WhatsApp handoffs that did not get through, and expire transcripts.
+"""Retry lead handoffs that did not get through, and expire transcripts.
 
     python -m backend.outbox_worker            # run forever, on a timer
     python -m backend.outbox_worker --once     # one pass, then exit
@@ -29,43 +29,66 @@ import sys
 from . import costing, db, store
 from .config import settings
 from .logger import get_logger, setup_logging
-from .services import brain, meter, whatsapp
+from .services import brain, meter, webhook, whatsapp
 
 logger = get_logger("localmama.outbox")
 
 
 async def drain(limit: int = 50) -> tuple[int, int]:
-    """Retry every owed handoff. Returns (sent, still_failing)."""
-    owed = store.claim_owed_handoffs(limit=limit)
+    """Retry every owed handoff on both channels. Returns (delivered, failing).
+
+    Swept per channel. A lead whose WhatsApp landed and whose webhook failed is
+    owed the webhook and nothing else — one shared sweep would message that
+    customer again to fix a problem they never had.
+    """
+    sent = failed = 0
+    for channel in ("whatsapp", "webhook"):
+        s, f = await _drain_channel(channel, limit=limit)
+        sent += s
+        failed += f
+    return sent, failed
+
+
+async def _drain_channel(channel: str, limit: int = 50) -> tuple[int, int]:
+    owed = store.claim_owed_handoffs(channel, limit=limit)
     if not owed:
         return 0, 0
 
     sent = failed = 0
     for row in owed:
-        vendors = row.get("vendors") or []
-        options = " · ".join(
-            f"{v['title']} {brain.spoken_phone(v.get('phone'))}".strip()
-            for v in vendors if v.get("title") and v.get("phone")
-        )
+        # The claim returns the whole lead, so the sweep builds the same body
+        # the live path does. `subject` is reconstructed the way the pipeline
+        # chose it — the caller's own words for the trade when we have them.
+        subject = row.get("service_said") or row.get("service") or ""
         # Attributed to the call it is owed to, so a lead that took nine
         # sweeps to deliver carries nine attempts against its own cost rather
         # than against nothing.
         with meter.for_call(row["call_id"]):
-            result = await whatsapp.send(
-                row["caller_phone"],
-                name=row.get("name"), service=row.get("service"), city=row.get("city"),
-                options=options, attempts=1,
-            )
+            if channel == "whatsapp":
+                options = " · ".join(
+                    f"{v['title']} {brain.spoken_phone(v.get('phone'))}".strip()
+                    for v in (row.get("vendors") or [])
+                    if v.get("title") and v.get("phone")
+                )
+                result = await whatsapp.send(
+                    row["caller_phone"], name=row.get("name"), service=subject,
+                    city=row.get("city"), options=options, attempts=1,
+                )
+                detail = result.get("messageId")
+            else:
+                result = await webhook.send(row, subject=subject, attempts=1)
+                detail = result.get("status")
         ok = bool(result.get("ok"))
         error = "" if ok else str(result.get("reason") or result.get("error") or "")
-        store.mark_whatsapp(row["call_id"], ok, error)
+        store.mark_handoff(row["call_id"], channel, ok, error, detail=detail)
         if ok:
             sent += 1
-            logger.info("sent %s (attempt %d)", row["call_id"][:8], row["attempts"] + 1)
+            logger.info("%s delivered %s (attempt %d)",
+                        channel, row["call_id"][:8], row["attempts"] + 1)
         else:
             failed += 1
-            logger.warning("still failing %s (attempt %d): %s",
-                           row["call_id"][:8], row["attempts"] + 1, error[:120])
+            logger.warning("%s still failing %s (attempt %d): %s",
+                           channel, row["call_id"][:8], row["attempts"] + 1, error[:120])
     return sent, failed
 
 
@@ -115,7 +138,7 @@ async def forever() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Retry owed WhatsApp handoffs.")
+    parser = argparse.ArgumentParser(description="Retry owed lead handoffs.")
     parser.add_argument("--once", action="store_true", help="one pass, then exit")
     parser.add_argument("--status", action="store_true", help="report without sending")
     args = parser.parse_args()
@@ -126,24 +149,36 @@ def main() -> int:
         return 1
 
     if args.status:
-        owed = store.pending_handoffs()
-        print(f"{len(owed)} lead(s) owed a WhatsApp message")
-        for row in owed:
-            print(f"   {row['call_id'][:8]}  {row['caller_phone']:16} "
-                  f"{row['name']} / {row['service']} / {row['city']}  "
-                  f"({row['status']}, attempts: {row['attempts']})"
-                  + (f"  last error: {row['error'][:60]}" if row.get("error") else ""))
+        for channel in ("whatsapp", "webhook"):
+            owed = store.pending_handoffs(channel)
+            print(f"{len(owed)} lead(s) owed a {channel}")
+            _report(owed)
         return 0
 
     if not settings.whatsapp_available:
         logger.warning(
-            "WhatsApp is not configured; owed leads will be marked skipped rather "
-            "than retried forever."
+            "WhatsApp is not configured; leads stay pending rather than being "
+            "marked terminal, because this is a state of the deployment and "
+            "not of the lead."
+        )
+    if not settings.webhook_available:
+        logger.warning(
+            "No webhook is configured (WEBHOOK_URL / WEBHOOK_SECRET); owed leads "
+            "stay pending rather than being marked terminal, because this is a "
+            "state of the deployment and not of the lead."
         )
 
     asyncio.run(one_pass() if args.once else forever())
     db.close()
     return 0
+
+
+def _report(owed: list) -> None:
+    for row in owed:
+        print(f"   {row['call_id'][:8]}  {row['caller_phone']:16} "
+              f"{row['name']} / {row['service']} / {row['city']}  "
+              f"({row['status']}, attempts: {row['attempts']})"
+              + (f"  last error: {row['error'][:60]}" if row.get("error") else ""))
 
 
 if __name__ == "__main__":
