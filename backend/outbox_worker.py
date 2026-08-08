@@ -117,11 +117,22 @@ async def reprocess() -> int:
 
 
 async def one_pass() -> None:
-    recovered = await reprocess()
+    # Drain first, then recover. The other order gives a lead recovered in this
+    # pass two goes at once: `reprocess` runs the pipeline, whose `notify`
+    # already tries three times with backoff, and then `drain` finds whatever
+    # came back `pending` and tries again — four attempts in a sweep that
+    # promises one. Recovered leads are still delivered in this pass, by that
+    # `notify`; they simply are not also swept until the next one.
+    #
+    # It cost little with one channel. With two there are two ways to come back
+    # `pending`, so the same lead can burn attempts on a provider that is down
+    # twice as fast, and `OUTBOX_MAX_ATTEMPTS` is what stops a lead being
+    # retried forever.
     sent, failed = await drain()
+    recovered = await reprocess()
     if recovered or sent or failed:
-        logger.info("sweep: recovered %d, sent %d, still owed %d",
-                    recovered, sent, failed)
+        logger.info("sweep: delivered %d, still owed %d, recovered %d",
+                    sent, failed, recovered)
     store.expire_transcripts()
     costing.prune_turns()
 
