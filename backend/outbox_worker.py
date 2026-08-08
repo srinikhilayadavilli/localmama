@@ -43,7 +43,7 @@ async def drain(limit: int = 50) -> tuple[int, int]:
     """
     sent = failed = 0
     for channel, configured in (("whatsapp", settings.whatsapp_available),
-                                ("webhook", settings.webhook_available)):
+                                ("webhook", webhook.configured())):
         # A channel with no credentials is skipped rather than swept. Claiming
         # a lead for it still increments its attempt counter, and
         # `OUTBOX_MAX_ATTEMPTS` is a permanent write-off: `WEBHOOK_URL` ships
@@ -55,14 +55,20 @@ async def drain(limit: int = 50) -> tuple[int, int]:
             logger.info("%s is not configured; skipping its sweep so leads keep "
                         "their attempts for when it is", channel)
             continue
-        s, f = await _drain_channel(channel, limit=limit)
+        # Only tenants with an endpoint, unless the environment fallback is
+        # set — in which case every tenant can be delivered for.
+        agents = None
+        if channel == "webhook" and not (settings.webhook_url and settings.webhook_secret):
+            agents = store.active_agents()
+        s, f = await _drain_channel(channel, limit=limit, agents=agents)
         sent += s
         failed += f
     return sent, failed
 
 
-async def _drain_channel(channel: str, limit: int = 50) -> tuple[int, int]:
-    owed = store.claim_owed_handoffs(channel, limit=limit)
+async def _drain_channel(channel: str, limit: int = 50,
+                         agents: list[str] | None = None) -> tuple[int, int]:
+    owed = store.claim_owed_handoffs(channel, limit=limit, agents=agents)
     if not owed:
         return 0, 0
 
@@ -209,11 +215,12 @@ def main() -> int:
             "marked terminal, because this is a state of the deployment and "
             "not of the lead."
         )
-    if not settings.webhook_available:
+    if not webhook.configured():
         logger.warning(
-            "No webhook is configured (WEBHOOK_URL / WEBHOOK_SECRET); owed leads "
-            "stay pending rather than being marked terminal, because this is a "
-            "state of the deployment and not of the lead."
+            "No webhook destination — no active row in "
+            "localmama.webhook_subscriptions and no WEBHOOK_URL/WEBHOOK_SECRET. "
+            "Owed leads stay pending rather than being marked terminal, because "
+            "this is a state of the deployment and not of the lead."
         )
 
     asyncio.run(one_pass() if args.once else forever())

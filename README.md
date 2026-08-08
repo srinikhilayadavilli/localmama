@@ -188,6 +188,12 @@ Migrations run **once per deploy, by one process**. They used to be issued
 lazily from inside a live call's save path, once per job process — concurrent
 DDL against Neon at the exact moment a caller was hanging up.
 
+The webhook's destination comes from `localmama.webhook_subscriptions`, set by
+the customer, falling back to `WEBHOOK_URL`/`WEBHOOK_SECRET`. In `localmama`
+and not the shared `utter` schema: that table belongs to the Vaani bridge, and
+lead delivery should not couple two products that share a database only by
+accident of hosting.
+
 **The handoff runs on two channels.** WhatsApp is what the caller receives;
 the webhook is being proven against a real receiver alongside it. They own
 different columns (`whatsapp_*` and `handoff_*`), are claimed separately and
