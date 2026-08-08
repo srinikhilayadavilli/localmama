@@ -464,6 +464,39 @@ def unprocessed_leads(limit: int = 50) -> list[str]:
         return []
 
 
+def active_webhook() -> dict | None:
+    """The customer's configured delivery endpoint, or None. Never raises.
+
+    Read per delivery rather than cached, because the point of moving this out
+    of the environment is that a customer can change it without waiting for a
+    deploy — and a cache measured in minutes reintroduces exactly the delay we
+    removed. It is one indexed row on a connection the caller already holds.
+
+    A database that is unreachable returns None, which falls back to the
+    environment rather than failing the handoff. The lead is already stored;
+    losing the endpoint for one pass costs a retry, and the sweep is the retry.
+
+    `db.available()` first, and not merely as an optimisation: without a DSN
+    the pool still tries to open, and this is called on every delivery. It cost
+    90 seconds on a test suite that runs in two.
+    """
+    if not db.available():
+        return None
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT id, url, secret FROM localmama.webhook_subscriptions"
+                " WHERE agent_id = %s AND active"
+                " LIMIT 1",
+                (settings.brain_agent_id,),
+            )
+            row = cur.fetchone()
+        return {"id": row[0], "url": row[1], "secret": row[2]} if row else None
+    except Exception as exc:  # noqa: BLE001 - fall back to the environment
+        logger.warning("could not read the webhook subscription: %s", exc)
+        return None
+
+
 def pending_handoffs(channel: str, limit: int = 50) -> list[dict]:
     """Leads still owed a delivery on one channel, oldest first. Read-only."""
     c = _cols(channel)

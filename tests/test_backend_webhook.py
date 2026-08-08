@@ -123,15 +123,15 @@ def test_the_signature_covers_the_timestamp_and_the_body(configured):
     body = b'{"a":1}'
     expected = hmac.new(b"shhh", b"1700000000." + body, hashlib.sha256).hexdigest()
 
-    assert webhook.sign(body, "1700000000") == "v1=" + expected
+    assert webhook.sign(body, "1700000000", "shhh") == "v1=" + expected
 
 
 def test_a_different_body_does_not_verify(configured):
-    assert webhook.sign(b'{"a":1}', "1") != webhook.sign(b'{"a":2}', "1")
+    assert webhook.sign(b'{"a":1}', "1", "s") != webhook.sign(b'{"a":2}', "1", "s")
 
 
 def test_a_different_timestamp_does_not_verify(configured):
-    assert webhook.sign(b'{"a":1}', "1") != webhook.sign(b'{"a":1}', "2")
+    assert webhook.sign(b'{"a":1}', "1", "s") != webhook.sign(b'{"a":1}', "2", "s")
 
 
 # --- when it sends, and when it gives up -----------------------------------
@@ -215,7 +215,8 @@ async def test_a_2xx_is_a_delivery(configured, monkeypatch):
     # The signature must verify against the exact bytes that went out, not a
     # re-encoding of the same object.
     ts = sent["headers"][webhook.TIMESTAMP_HEADER]
-    assert sent["headers"][webhook.SIGNATURE_HEADER] == webhook.sign(sent["body"], ts)
+    assert sent["headers"][webhook.SIGNATURE_HEADER] == webhook.sign(
+        sent["body"], ts, "shhh")
 
 
 class _Response:

@@ -41,7 +41,7 @@ from contract import (
 from . import db, ops, pipeline, store
 from .config import missing_required, settings
 from .logger import get_logger, setup_logging
-from .services import brain, meter, translate
+from .services import brain, meter, translate, webhook
 
 logger = get_logger("localmama.api")
 
@@ -92,7 +92,7 @@ async def healthz() -> dict:
         "ok": ok,
         "problems": problems,
         "whatsapp": settings.whatsapp_available,
-        "webhook": settings.webhook_available,
+        "webhook": webhook.configured(),
         "translation": translate.available(),
     }
 
