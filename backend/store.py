@@ -240,7 +240,7 @@ def get_lead(call_id: str) -> dict | None:
             "SELECT call_id, caller_phone, dialled, language, raw, name, service,"
             " service_said, city, status, confirmed, confidence, needs_review,"
             " review_reason, vendors, asked_vendors, service_inferred,"
-            " handoff_status, transcript, started_at, ended_at"
+            " handoff_status, handoff_subject, transcript, started_at, ended_at"
             " FROM localmama.leads WHERE call_id = %s",
             (call_id,),
         )
@@ -250,8 +250,8 @@ def get_lead(call_id: str) -> dict | None:
     cols = ["call_id", "caller_phone", "dialled", "language", "raw", "name",
             "service", "service_said", "city", "status", "confirmed", "confidence",
             "needs_review", "review_reason", "vendors", "asked_vendors",
-            "service_inferred", "handoff_status", "transcript",
-            "started_at", "ended_at"]
+            "service_inferred", "handoff_status", "handoff_subject",
+            "transcript", "started_at", "ended_at"]
     return dict(zip(cols, row))
 
 
@@ -323,20 +323,29 @@ def _cols(channel: str) -> dict:
 
 
 def mark_handoff(call_id: str, channel: str, ok: bool, error: str = "",
-                 detail: object = None) -> None:
+                 detail: object = None, terminal: bool = False) -> None:
     """Record the outcome of one channel's attempt. Never raises.
 
     `sent` is terminal. `pending` means it is still owed and will be retried;
     `skipped` means there was nothing to deliver to, or nothing to deliver
     with — neither is a failure and neither improves by being retried forever.
 
+    `terminal` is for a *sender* that knows its failure will not improve, and
+    exists because the alternative was matching on error text. A receiver that
+    rejects the body with 400 is refusing this lead permanently — a rotated
+    secret, a schema it does not accept — and without a way to say so it was
+    recorded as `pending`, re-POSTed every five minutes for 25 attempts, and
+    then dropped past `OUTBOX_MAX_ATTEMPTS` with nothing but repeated warnings
+    to show for it.
+
     `detail` is whatever that channel has worth keeping: a provider message id
-    for WhatsApp, the receiver's HTTP status for the webhook.
+    for WhatsApp, the receiver's HTTP status for the webhook. Coerced by the
+    caller — these are two differently typed columns behind one parameter.
     """
     c = _cols(channel)
     status = (
         "sent" if ok
-        else ("skipped" if error in _NOT_WORTH_RETRYING else "pending")
+        else ("skipped" if terminal or error in _NOT_WORTH_RETRYING else "pending")
     )
     try:
         with db.connection() as conn:
@@ -347,7 +356,7 @@ def mark_handoff(call_id: str, channel: str, ok: bool, error: str = "",
                     f" {c['error']} = %s, {c['detail']} = %s,"
                     f" {c['at']} = now(), updated_at = now()"
                     " WHERE call_id = %s",
-                    (status, error or None, detail if detail != "" else None, call_id),
+                    (status, error or None, detail if detail not in ("", None) else None, call_id),
                 )
             conn.commit()
     except Exception as exc:  # noqa: BLE001 - the lead is already stored
@@ -406,16 +415,16 @@ def claim_owed_handoffs(channel: str, limit: int = 50,
                     " RETURNING call_id, caller_phone, dialled, language, name,"
                     "           service, service_said, service_inferred, city,"
                     "           status, confirmed, confidence, needs_review,"
-                    f"           review_reason, vendors, started_at, ended_at,"
-                    f"           {c['attempts']}",
+                    "           review_reason, vendors, handoff_subject,"
+                    f"           started_at, ended_at, {c['attempts']}",
                     (settings.brain_agent_id, settings.outbox_max_attempts,
                      stale_after_minutes, limit),
                 )
                 cols = ["call_id", "caller_phone", "dialled", "language", "name",
                         "service", "service_said", "service_inferred", "city",
                         "status", "confirmed", "confidence", "needs_review",
-                        "review_reason", "vendors", "started_at", "ended_at",
-                        "attempts"]
+                        "review_reason", "vendors", "handoff_subject",
+                        "started_at", "ended_at", "attempts"]
                 claimed = [dict(zip(cols, r)) for r in cur.fetchall()]
             conn.commit()
         if claimed:

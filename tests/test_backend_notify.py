@@ -38,7 +38,8 @@ class FakeStore:
     def upsert_call(self, call_id, **fields):
         self.updates.append(fields)
 
-    def mark_handoff(self, call_id, channel, ok, error="", detail=None):
+    def mark_handoff(self, call_id, channel, ok, error="", detail=None,
+                     terminal=False):
         self.marks.append((ok, error))
         self.by_channel.setdefault(channel, []).append((ok, error))
 
@@ -156,7 +157,13 @@ async def test_an_unverifiable_service_is_not_messaged_about(monkeypatch, sent):
 
     assert sent == []
     assert store.by_channel["whatsapp"] == [(False, "service unverified")]
-    assert store.by_channel["webhook"] == [(False, "service unverified")]
+    # …but your own system still hears about it. The guard above is about
+    # message copy — naming a trade we cannot vouch for *to the caller* is
+    # worse than silence. That reasoning does not transfer to a receiver which
+    # gets `review.needs_review` and the reason alongside the lead and can
+    # triage it. Suppressing both would mean the leads most needing a human
+    # are the ones nobody is told about.
+    assert store.by_channel["webhook"] == [(True, "")]
 
 
 @pytest.mark.asyncio

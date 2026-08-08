@@ -18,7 +18,17 @@ ALTER TABLE localmama.leads
     -- The receiver's HTTP status. `sent` means it answered 2xx and nothing
     -- more: what it then did with the lead is its own business, and a webhook
     -- that 200s into a black hole is indistinguishable from one that works.
-    ADD COLUMN IF NOT EXISTS handoff_response INTEGER;
+    ADD COLUMN IF NOT EXISTS handoff_response INTEGER,
+    -- What the handoff is *about*, decided once by the pipeline and stored.
+    --
+    -- The sweep used to rebuild this from `service_said or service`, which is
+    -- not the same decision: `_what_the_message_is_about` returns the name of
+    -- a business the caller asked for by name, and refuses to name a trade the
+    -- audit could not vouch for. A retry that re-derives it says "here are
+    -- some electrician options" to someone whose service decoded badly and who
+    -- actually asked for a café — the exact outcome that function exists to
+    -- prevent. Decided once, written down, read back.
+    ADD COLUMN IF NOT EXISTS handoff_subject TEXT;
 
 -- Every lead that already exists predates the webhook, so the default above
 -- would make all of them owed at once and the first sweep would POST the entire

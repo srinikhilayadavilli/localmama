@@ -1,17 +1,17 @@
 """Lead handoff over a signed webhook.
 
-Replaces the CampaignBot WhatsApp sender. The delivery mechanism changed; the
-contract around it did not. This still fires once a lead is saved, still never
-raises, and is still best-effort by construction — the lead is on disk before
-this runs, so a receiver that is down, slow or misconfigured costs us a retry
-and never a lead.
+Runs *alongside* the CampaignBot WhatsApp sender, not instead of it: WhatsApp
+is what the caller receives, and this is the channel being proven against a
+real receiver. Fires once a lead is saved, never raises, best-effort by
+construction — the lead is on disk before this runs, so a receiver that is
+down, slow or misconfigured costs us a retry and never a lead.
 
 What goes in the body is every detail the pipeline produced: who called, what
 they asked for, where, what we matched, how much of it we believe, and whether
 a human should look. What does not go in it:
 
-  * the WhatsApp columns, which are the record of a channel that no longer
-    exists and mean nothing to a receiver;
+  * the WhatsApp columns, which are this system's record of its own delivery
+    attempts and mean nothing to a receiver;
   * the transcript, which is everything the caller said and personal data under
     the DPDP Act. It stays here, under a retention sweep, rather than being
     copied to a third party that has its own retention rules and its own
@@ -53,7 +53,7 @@ VERSION_HEADER = "X-Localmama-Version"
 def _norm_phone(raw: str) -> str:
     """Digits to E.164-ish.
 
-    Kept from the WhatsApp sender, where it was learned the hard way: Indian
+    Shared behaviour with the WhatsApp sender, learned the hard way: Indian
     callers arrive as "09739960092", and prepending a country code without
     stripping the national trunk "0" yields "+0…" — which the old provider
     accepted and never delivered. The receiver deserves a number it can dial.
@@ -184,7 +184,13 @@ async def _attempt(payload: dict, attempts: int) -> dict:
             SIGNATURE_HEADER: sign(body, timestamp),
         }
         try:
-            async with httpx.AsyncClient(timeout=settings.webhook_timeout) as client:
+            # Redirects are followed. A receiver mounted at `/hook` that is
+            # configured here as `/hook/` — or configured as http:// behind a
+            # host that upgrades — answers 307, which is neither a success nor
+            # something a retry fixes. Left unfollowed it is a permanent,
+            # silent non-delivery caused by a trailing slash.
+            async with httpx.AsyncClient(timeout=settings.webhook_timeout,
+                                         follow_redirects=True) as client:
                 res = await client.post(settings.webhook_url, content=body, headers=headers)
             if res.status_code < 300:
                 logger.info("delivered %s to the webhook: HTTP %d (attempt %d)",
@@ -192,12 +198,22 @@ async def _attempt(payload: dict, attempts: int) -> dict:
                 return {"ok": True, "status": res.status_code}
             err = f"HTTP {res.status_code}: {res.text[:200]!r}"
             logger.warning("webhook rejected (attempt %d/%d): %s", attempt, attempts, err)
-            # 4xx is a bad body or a dead secret. Retrying cannot fix either,
-            # and 25 sweeps of the same rejection is 25 identical log lines.
-            # 429 is the exception: it is the receiver asking for later, and
-            # later is exactly what the sweep provides.
+            # 4xx is a bad body or a dead secret: the receiver is refusing this
+            # lead, not failing to receive it. `terminal` says so explicitly
+            # rather than leaving the store to infer it from the error text —
+            # without it this was recorded `pending` and re-POSTed identically
+            # every five minutes until the attempt ceiling dropped the lead.
+            #
+            # 429 is the exception: the receiver asking for later, and later is
+            # exactly what the sweep provides.
+            if 400 <= res.status_code < 500 and res.status_code != 429:
+                return {"ok": False, "error": err, "status": res.status_code,
+                        "terminal": True}
             if res.status_code < 500 and res.status_code != 429:
-                return {"ok": False, "error": err, "status": res.status_code}
+                # 3xx that survived follow_redirects — a redirect loop, or a
+                # 300 with no Location. Not retryable, not a rejection either.
+                return {"ok": False, "error": err, "status": res.status_code,
+                        "terminal": True}
         except Exception as exc:  # noqa: BLE001 - network/timeout is worth a retry
             err = repr(exc)
             logger.warning("webhook failed (attempt %d/%d): %s", attempt, attempts, err)

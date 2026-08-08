@@ -23,6 +23,11 @@ from backend.config import settings as backend_settings
 _BLANKED = [
     (backend_settings, "database_url"),    # brain + lead store report unavailable
     (backend_settings, "sarvam_api_key"),  # translate falls back to the offline table
+    # Both handoff channels, because both are live. Dropping the WhatsApp key
+    # when the webhook ones were added left the real CampaignBot sender armed:
+    # any test reaching `pipeline.notify` without patching it would have posted
+    # a real message to a real number using whatever key was in the dev `.env`.
+    (backend_settings, "whatsapp_api_key"),
     (backend_settings, "webhook_url"),      # the handoff reports "not configured"
     (backend_settings, "webhook_secret"),   # …and never signs or posts anything
     (agent_settings, "backend_url"),       # the agent's event queue stays local

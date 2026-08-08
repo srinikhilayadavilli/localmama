@@ -348,7 +348,13 @@ def backlog() -> dict:
     """
     rows = _rows(
         "SELECT count(*) FILTER (WHERE ended_at IS NOT NULL AND processed_at IS NULL)::int,"
-        "       count(*) FILTER (WHERE whatsapp_status IN ('pending','sending')"
+        # Either channel. A webhook receiver that is down accumulates
+        # `handoff_status = 'pending'` while `whatsapp_status` reads 'sent',
+        # and counting only the latter reported a clean backlog for as long as
+        # the receiver stayed broken — precisely the silent failure this gauge
+        # exists to surface.
+        "       count(*) FILTER (WHERE (whatsapp_status IN ('pending','sending')"
+        "                               OR handoff_status IN ('pending','sending'))"
         "                          AND caller_phone IS NOT NULL"
         "                          AND processed_at IS NOT NULL)::int,"
         "       count(*) FILTER (WHERE needs_review)::int,"

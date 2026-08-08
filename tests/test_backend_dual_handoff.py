@@ -28,7 +28,8 @@ class FakeStore:
     def upsert_call(self, call_id, **fields):
         self.updates.append(fields)
 
-    def mark_handoff(self, call_id, channel, ok, error="", detail=None):
+    def mark_handoff(self, call_id, channel, ok, error="", detail=None,
+                     terminal=False):
         self.by_channel.setdefault(channel, []).append(
             {"ok": ok, "error": error, "detail": detail}
         )
@@ -172,3 +173,57 @@ def test_an_unknown_channel_is_refused_not_interpolated():
     """These column names go into SQL by f-string. The whitelist is the guard."""
     with pytest.raises(ValueError):
         store._cols("'; DROP TABLE localmama.leads; --")
+
+
+# --- what the review found -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_subject_is_stored_not_re_derived(monkeypatch, wired):
+    """The sweep used to rebuild it as `service_said or service`, which is a
+    different decision to the one `_what_the_message_is_about` made. Storing it
+    is what stops a retry naming a trade the live path refused to name."""
+    s = FakeStore(_lead(
+        raw={"language": "english", "name": "Ravi"},
+        _heard=["Ravi"],
+        asked_vendors=[{"title": "Brimmies Cafe", "phone": "+919876543210"}],
+    ))
+    await _run(monkeypatch, s)
+
+    written = [u for u in s.updates if "handoff_subject" in u]
+    assert written and written[-1]["handoff_subject"] == "Brimmies Cafe"
+
+
+@pytest.mark.asyncio
+async def test_an_unverified_service_still_reaches_the_webhook(monkeypatch, wired):
+    """The copy guard is about what we say to the *caller*. Your own system
+    receives the review verdict with the lead and can triage it — suppressing
+    both would hide exactly the leads that most need a human."""
+    s = FakeStore(_lead(
+        confirmed=None,
+        raw={"language": "tamil", "name": "பணிகுமார்",
+             "service": "இலெக்ட்ரீஷியன்", "city": "சென்னை"},
+        _heard=["என்னோட பெயர் பணிகுமார்", "సరఫరా చేయనో"],
+    ))
+    await _run(monkeypatch, s)
+
+    assert s.by_channel["whatsapp"][0]["ok"] is False
+    assert s.by_channel["webhook"][0]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_rejection_is_passed_through(monkeypatch, wired):
+    """A 4xx means the receiver refuses this lead, not that it failed to
+    receive it. Without the flag it was recorded `pending` and re-POSTed 25
+    times before being dropped past the attempt ceiling."""
+    wired["hook"] = {"ok": False, "error": "HTTP 400", "status": 400,
+                     "terminal": True}
+    s = FakeStore(_lead())
+    marks = []
+    s.mark_handoff = lambda cid, ch, ok, error="", detail=None, terminal=False: (
+        marks.append((ch, terminal))
+    )
+    await _run(monkeypatch, s)
+
+    assert ("webhook", True) in marks
+    assert ("whatsapp", False) in marks

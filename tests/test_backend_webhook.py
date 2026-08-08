@@ -226,3 +226,70 @@ class _Response:
 
 async def _no_sleep(_seconds):
     return None
+
+
+# --- what the review found -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_4xx_is_terminal_not_merely_failed(configured, monkeypatch):
+    """It was returned as a plain failure, which `mark_handoff` mapped to
+    `pending` because the error text was not in `_NOT_WORTH_RETRYING` — so a
+    permanently rejected body was re-POSTed every five minutes for 25 attempts
+    and then dropped past the ceiling."""
+    async def _post(self, url, content=None, headers=None):
+        return _Response(400, "bad signature")
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _post)
+    result = await webhook.send(_lead(), attempts=3)
+
+    assert result["terminal"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_429_is_not_terminal(configured, monkeypatch):
+    """Rate limiting is the receiver asking for later, not refusing the lead."""
+    async def _post(self, url, content=None, headers=None):
+        return _Response(429, "slow down")
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _post)
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+    result = await webhook.send(_lead(), attempts=2)
+
+    assert not result.get("terminal")
+
+
+@pytest.mark.asyncio
+async def test_a_5xx_is_not_terminal(configured, monkeypatch):
+    async def _post(self, url, content=None, headers=None):
+        return _Response(503, "down")
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _post)
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+    result = await webhook.send(_lead(), attempts=2)
+
+    assert not result.get("terminal")
+
+
+@pytest.mark.asyncio
+async def test_redirects_are_followed(configured, monkeypatch):
+    """A receiver mounted at `/hook` configured here as `/hook/` answers 307 —
+    the FastAPI/Flask/Django default. Unfollowed, that is a permanent silent
+    non-delivery caused by a trailing slash."""
+    import httpx
+
+    seen = {}
+    real_init = httpx.AsyncClient.__init__
+
+    def _init(self, *a, **kw):          # __init__ is sync, not a coroutine
+        seen.update(kw)
+        real_init(self, *a, **kw)
+
+    async def _post(self, url, content=None, headers=None):
+        return _Response(200, "ok")
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", _init)
+    monkeypatch.setattr(httpx.AsyncClient, "post", _post)
+    await webhook.send(_lead())
+
+    assert seen.get("follow_redirects") is True
