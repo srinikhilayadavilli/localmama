@@ -156,6 +156,18 @@ def destination(agent_id: str | None = None) -> dict | None:
     sub = store.active_webhook(agent_id)
     if sub and sub.get("url") and sub.get("secret"):
         return sub
+    # The environment pair belongs to **the default tenant only**.
+    #
+    # It exists so a deployment with an empty table behaves as it did before
+    # the table existed — that deployment had exactly one customer, and this is
+    # their endpoint. Applying it to any tenant without a subscription means a
+    # business whose dashboard row has not been written yet has its callers'
+    # names and phone numbers POSTed to a different customer's receiver, signed
+    # with a secret that receiver already holds, and marked `sent` so no retry
+    # ever corrects it. Onboarding, a deactivated row, and the documented
+    # deactivate-then-insert rotation all pass through that state.
+    if (agent_id or settings.brain_agent_id) != settings.brain_agent_id:
+        return None
     if settings.webhook_url and settings.webhook_secret:
         return {"id": "env", "url": settings.webhook_url,
                 "secret": settings.webhook_secret}

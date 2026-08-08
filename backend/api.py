@@ -130,9 +130,11 @@ async def post_events(batch: EventBatch, background: BackgroundTasks) -> EventAc
 def _apply(event, background: BackgroundTasks) -> None:  # noqa: ANN001
     """Fold one event onto its lead row."""
     if isinstance(event, CallStarted):
-        # The one event that carries the dialled number, so the one place the
-        # tenant is decided. `upsert_call` writes `agent_id` only when given,
-        # which corrects a row a `call.captured` may have created first.
+        # The one event that carries the dialled number, so the first place
+        # the tenant can be decided. `agent_for_did` returns None when the
+        # answer is unknown — a database blip rather than an unclaimed number —
+        # and `upsert_call` then leaves the column alone rather than writing a
+        # guess that nothing would ever revisit. `pipeline` resolves again.
         store.upsert_call(
             event.call_id,
             agent_id=store.agent_for_did(event.dialled),

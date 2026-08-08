@@ -351,6 +351,17 @@ async def _process(call_id: str) -> dict | None:
         note = f"trade understood as {inferred!r}, not stated"
         reason = f"{reason}; {note}" if reason else note
 
+    # Resolve the tenant again, now that a database that was unreachable at
+    # `call.started` has had a minute. Written only when it improves on what is
+    # there: `call.started` is deduplicated by `event_id`, so without this a
+    # single blip would leave a lead attributed to the default tenant for good.
+    owner = store.agent_for_did(lead.get("dialled"))
+    if owner and owner != lead.get("agent_id"):
+        logger.info("call %s belongs to %s, not %s",
+                    call_id[:8], owner, lead.get("agent_id"))
+        store.upsert_call(call_id, agent_id=owner)
+        lead["agent_id"] = owner
+
     subject, skip = _what_the_message_is_about(
         english, confidence, asked, confirmed=lead.get("confirmed") is True
     )

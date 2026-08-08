@@ -32,7 +32,11 @@ localmama.webhook_subscriptions
 ```
 
 `did` is the primary key of `tenant_numbers` because a number can belong to one
-tenant at a time, and routing depends on that being true.
+tenant at a time, and routing depends on that being true. Store it in E.164
+(`+918071581496`) — a `CHECK` enforces it. Resolution compares digits only,
+because the trunk may present the same number as `91…`, `0…` or
+`sip:+91…@host`, and an exact string match silently files those calls under the
+default tenant.
 
 A **unique partial index** allows one active subscription per tenant.
 Deactivate-then-insert is how rotation works. Fan-out to several endpoints is
@@ -51,18 +55,28 @@ which belongs to the Vaani bridge. Lead delivery reads
 has no effect on where leads go.
 
 ```sql
+-- with a secret the customer typed
 INSERT INTO localmama.webhook_subscriptions (agent_id, url, secret)
-VALUES ($1, $2, NULLIF($3, ''));
+VALUES ($1, $2, $3);
+
+-- blank: omit the column entirely
+INSERT INTO localmama.webhook_subscriptions (agent_id, url)
+VALUES ($1, $2);
 ```
 
 Three rules the dashboard has to honour:
 
-**Send `agent_id`.** It is which customer this is. Without it the row defaults
-to `localmama` and that customer's leads go to whoever holds the default.
+**Send `agent_id`.** It is which customer this is, and it is required — the
+column had a hard-coded `'localmama'` default, which meant a row written
+without it silently belonged to whoever holds the deployment's default tenant.
+The insert now fails instead, which is the correct outcome: the dashboard is
+the only party that knows whose subscription this is.
 
-**Leave `secret` out — or pass NULL — when the user leaves the field blank.**
-The column default mints one. Do not insert an empty string: a `CHECK` refuses
-it, which is deliberate. "Optional" in the dialog must mean *we will make you
+**Omit the `secret` column entirely when the user leaves the field blank** —
+two statements, not one with `NULLIF`. Postgres applies a column default only
+when the column is absent from the INSERT; an explicit NULL is inserted as
+NULL and fails `NOT NULL`. An empty string fails the length `CHECK`. Both
+refusals are deliberate: "optional" in the dialog must mean *we will make you
 one*, never *you will be sent unsigned traffic*.
 
 **Deactivate before inserting.** One active row per tenant is enforced by an

@@ -55,11 +55,16 @@ async def drain(limit: int = 50) -> tuple[int, int]:
             logger.info("%s is not configured; skipping its sweep so leads keep "
                         "their attempts for when it is", channel)
             continue
-        # Only tenants with an endpoint, unless the environment fallback is
-        # set — in which case every tenant can be delivered for.
+        # Only tenants that can actually be delivered for: those with an
+        # active subscription, plus the default tenant when the environment
+        # fallback is set. Never an unfiltered claim — that swept every
+        # tenant's leads into whichever endpoint `destination()` happened to
+        # resolve, which for a tenant mid-onboarding was somebody else's.
         agents = None
-        if channel == "webhook" and not (settings.webhook_url and settings.webhook_secret):
+        if channel == "webhook":
             agents = store.active_agents()
+            if settings.webhook_url and settings.webhook_secret:
+                agents = sorted({*agents, settings.brain_agent_id})
         s, f = await _drain_channel(channel, limit=limit, agents=agents)
         sent += s
         failed += f

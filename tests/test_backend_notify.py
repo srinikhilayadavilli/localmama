@@ -32,6 +32,9 @@ class FakeStore:
     def get_lead(self, call_id):
         return self.lead
 
+    def agent_for_did(self, dialled):
+        return "localmama"
+
     def transcript_for(self, call_id):
         return self.lead.get("_heard", [])
 

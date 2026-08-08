@@ -78,36 +78,66 @@ def record_events(events: list[Event]) -> tuple[list[str], list[str]]:
     return accepted, duplicates
 
 
-def agent_for_did(dialled: str | None) -> str:
+def _digits(raw: str | None) -> str:
+    """A phone number reduced to what actually identifies it.
+
+    `dialled` is whatever the trunk put in `sip.trunkPhoneNumber`, only
+    stripped — Indian SIP providers variously present `+918071581496`,
+    `918071581496`, `08071581496` and `sip:+918071581496@host`. Matching those
+    as strings against a stored E.164 form misses, and a miss is silent: the
+    call is filed under the default tenant with one INFO line.
+    """
+    digits = "".join(ch for ch in str(raw or "") if ch.isdigit()).lstrip("0")
+    # The same rule the senders apply to a caller's number: a bare ten-digit
+    # Indian number is missing its country code, and "08071581496" is the
+    # national form of "+918071581496". Without this the national form matches
+    # nothing and every call presented that way is filed under the default.
+    if len(digits) == 10:
+        digits = "91" + digits
+    return digits
+
+
+def agent_for_did(dialled: str | None) -> str | None:
     """Which tenant answers this number. Never raises.
 
     The number the caller rang is the routing key — a business owns its DID,
     and that ownership is the only thing about a call that identifies whose
     lead it is before a word is spoken.
 
-    An unmapped number falls back to `BRAIN_AGENT_ID`, which is what every
-    lead used unconditionally before tenants existed. A call arriving on a
-    number nobody has claimed is still a lead worth keeping; it just lands with
-    the default tenant rather than being dropped.
+    Returns None when the answer is *unknown* rather than "nobody owns this".
+    Those are different, and conflating them was a bug: a Neon blip during
+    `call.started` returned the default tenant, `upsert_call` wrote it, and
+    nothing ever re-resolved — `call.started` is deduplicated by `event_id` and
+    no other event carries the number. One transient error misfiled a lead
+    under the wrong business permanently. None lets the caller leave the column
+    alone and resolve again later, which `pipeline` does.
+
+    A number genuinely mapped to nobody still returns the default: a call on an
+    unclaimed number is a lead worth keeping.
     """
-    if not dialled or not db.available():
+    if not dialled:
         return settings.brain_agent_id
+    if not db.available():
+        return None
     try:
         with db.cursor() as cur:
             cur.execute(
                 "SELECT n.agent_id FROM localmama.tenant_numbers n"
                 "  JOIN localmama.tenants t ON t.agent_id = n.agent_id"
-                " WHERE n.did = %s AND n.active AND t.active",
-                (dialled,),
+                " WHERE regexp_replace(n.did, '\\D', '', 'g') "
+                "       = regexp_replace(%s, '^0+', '')"
+                "   AND n.active AND t.active",
+                (_digits(dialled),),
             )
             row = cur.fetchone()
         if row:
             return row[0]
         logger.info("no tenant owns %s; filing under %s",
                     dialled, settings.brain_agent_id)
-    except Exception as exc:  # noqa: BLE001 - a lead is worth more than routing
+        return settings.brain_agent_id
+    except Exception as exc:  # noqa: BLE001 - unknown, not "the default"
         logger.warning("could not resolve the tenant for %s: %s", dialled, exc)
-    return settings.brain_agent_id
+        return None
 
 
 def active_agents() -> list[str]:
@@ -300,7 +330,7 @@ def record_service_call(
 def get_lead(call_id: str) -> dict | None:
     with db.cursor() as cur:
         cur.execute(
-            "SELECT call_id, caller_phone, dialled, language, raw, name, service,"
+            "SELECT call_id, agent_id, caller_phone, dialled, language, raw, name, service,"
             " service_said, city, status, confirmed, confidence, needs_review,"
             " review_reason, vendors, asked_vendors, service_inferred,"
             " handoff_status, handoff_subject, transcript, started_at, ended_at"
@@ -310,7 +340,7 @@ def get_lead(call_id: str) -> dict | None:
         row = cur.fetchone()
     if row is None:
         return None
-    cols = ["call_id", "caller_phone", "dialled", "language", "raw", "name",
+    cols = ["call_id", "agent_id", "caller_phone", "dialled", "language", "raw", "name",
             "service", "service_said", "city", "status", "confirmed", "confidence",
             "needs_review", "review_reason", "vendors", "asked_vendors",
             "service_inferred", "handoff_status", "handoff_subject",
@@ -569,7 +599,7 @@ def pending_handoffs(channel: str, limit: int = 50) -> list[dict]:
     try:
         with db.cursor() as cur:
             cur.execute(
-                "SELECT call_id, caller_phone, name, service, city,"
+                "SELECT call_id, agent_id, caller_phone, name, service, city,"
                 f" {c['status']}, {c['attempts']}, {c['error']}"
                 " FROM localmama.leads"
                 f" WHERE {c['status']} IN ('pending', 'sending')"
@@ -577,8 +607,8 @@ def pending_handoffs(channel: str, limit: int = 50) -> list[dict]:
                 " ORDER BY created_at LIMIT %s",
                 (settings.outbox_max_attempts, limit),
             )
-            cols = ["call_id", "caller_phone", "name", "service", "city",
-                    "status", "attempts", "error"]
+            cols = ["call_id", "agent_id", "caller_phone", "name", "service",
+                    "city", "status", "attempts", "error"]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
     except Exception as exc:  # noqa: BLE001
         logger.warning("could not read the outbox: %s", exc)
