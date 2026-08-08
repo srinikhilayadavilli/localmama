@@ -37,7 +37,7 @@ room clock ────────────┘
         └─ Meter ──── call.ended.usage[] ──→ localmama.usage ──┐
                       call.ended.turns[] ──→ localmama.call_turns
                                                                ├─→ usage_priced
-Sarvam / WhatsApp ──── meter.metered() ────→ localmama.usage ──┘   (view)
+Sarvam / webhook  ──── meter.metered() ────→ localmama.usage ──┘   (view)
                                                                         │
                                             localmama.rate_card ────────┤
                                                                         ▼
@@ -77,7 +77,7 @@ Nothing about that failure looks wrong on a dashboard; the number is just big.
 | Realtime model tokens | `session_usage_updated` | yes |
 | LiveKit session + SIP leg | room clock at `call.ended` | yes |
 | Sarvam translate/transliterate | `meter.metered` at the HTTP choke point | yes |
-| WhatsApp handoff | `meter.metered` around the send | yes |
+| Webhook handoff | `meter.metered` around the delivery | yes, priced at zero |
 | **Transcription** | **derived — see below** | **no** |
 
 ### The one estimate

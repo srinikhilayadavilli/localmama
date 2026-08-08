@@ -76,7 +76,7 @@ caller who wants Telugu simply says "Telugu"; the list is offered only if they
 hesitate or ask.
 
 **Nothing durable runs on the caller's clock.** Persisting the lead and the
-WhatsApp handoff both reach the network, and the model cannot speak its closing
+webhook handoff both reach the network, and the model cannot speak its closing
 line until the tool returns. Inline, that measured **15.26s** of silence before
 the goodbye.
 
@@ -195,7 +195,7 @@ Two lookups, and **both are literal — neither embeds**:
   "Cleanmates" → "Clean Mates" (0.95) while rejecting "Speed Autos" → "Speed
   Kawasaki Kolkata".
 - **`matches_for_service(service)`** — who actually does this work, for the
-  WhatsApp options line. Category hits win outright over keyword hits, or
+  vendor list. Category hits win outright over keyword hits, or
   "cleaning" returns a dental clinic on the strength of "teeth cleaning".
   Requires a phone: a name the caller cannot ring is a teaser, not an answer.
 
@@ -282,9 +282,12 @@ resort rather than a routine outcome.
 ## When post-call work fails
 
 Everything after the caller hangs up is invisible to them, which is exactly why
-it needs a paper trail. `localmama.leads.whatsapp_status` is the outbox:
-`pending` until a send succeeds (`sent`), or `skipped` when there was nothing to
-send to or nothing to send with.
+it needs a paper trail. Each channel has its own outbox columns —
+`whatsapp_status` and `handoff_status` — claimed and swept independently:
+`pending` until a delivery succeeds (`sent`), or `skipped` when there was
+nothing to deliver to or nothing to deliver with. `handoff_response` keeps the
+receiver's HTTP status — `sent` means it answered 2xx and nothing more, so a
+webhook that 200s into a black hole looks exactly like one that works.
 
 - **Rows are claimed, not just read** — `UPDATE ... RETURNING` with `FOR UPDATE
   SKIP LOCKED` — so two workers sweeping at once take disjoint batches. A claim
@@ -296,10 +299,16 @@ send to or nothing to send with.
   three attempts each is minutes of work to learn one fact.
 - Retries stop after `OUTBOX_MAX_ATTEMPTS` (25), so a permanently bad number is
   not tried forever.
-- **An unconfigured WhatsApp is `skipped`, not `pending`.** The guard used to
-  live only on a fire-and-forget helper; when both call sites moved to the
-  awaited path it was lost, and every completed call POSTed an empty bearer
-  token three times before leaving the lead to be retried 25 more times.
+- **An unconfigured webhook stays `pending`, not `skipped`.** Whether the
+  handoff is configured is a state of the deployment, not of the lead: it
+  changes the moment someone sets `WEBHOOK_URL` and `WEBHOOK_SECRET`, and every
+  lead that arrived meanwhile is still owed. The guard lives in the sender
+  itself because there is no second entry point to hold it — without it an
+  unconfigured deployment POSTs to an empty URL three times per call before
+  leaving the lead to be retried 25 more times.
+- **A 4xx is terminal, a 429 is not.** A rejected body or a dead secret cannot
+  be fixed by trying again; rate limiting is the receiver asking for later,
+  which is exactly what the sweep provides.
 
 The agent's event queue has the same shape: events are idempotent by
 `event_id`, so a retry that turns out to have landed is a no-op rather than a
@@ -311,9 +320,11 @@ shortly after.
 
 ## Known limits
 
-CampaignBot was unreachable 2026-07-28 to ~2026-07-30 and that outage is over —
-confirmed 2026-07-31 by live sends from the deployed backend. `whatsapp_status`
-on the lead row is the signal to trust, not this file.
+Two handoff channels run at once as of 2026-08-08: WhatsApp, which the caller
+receives, and a signed webhook being proven alongside it. `whatsapp_status` is
+what the customer actually got — it is the one costing counts as delivered.
+`handoff_status` is the webhook's own record. Both on the lead row are the
+signal to trust, not this file.
 
 - **Indic languages are anglicised**, per the voice section above.
 - **Question order and the read-back are asked for, not enforced.**

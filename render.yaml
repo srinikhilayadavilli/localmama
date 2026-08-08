@@ -32,11 +32,22 @@ services:
         generateValue: true        # the agent presents this as a bearer token
       - key: SARVAM_API_KEY
         sync: false
+      # The handoff runs on two channels while the webhook is being proven.
+      # WhatsApp is what the caller receives and stays until the webhook has
+      # worked against a real receiver.
       - key: WHATSAPP_ENABLED
         value: "1"
       - key: WHATSAPP_API_KEY
         sync: false
       - key: WHATSAPP_TEMPLATE_NAME
+        sync: false
+      # Where a finished lead is POSTed, and the HMAC key it is signed with.
+      # Both are required: a URL without a secret sends a caller's name and
+      # phone number to an endpoint that cannot tell us from anyone else, so a
+      # missing secret disables that channel entirely.
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_SECRET
         sync: false
       - key: BRAIN_OWNER_ID
         value: localmama

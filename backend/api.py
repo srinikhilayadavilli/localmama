@@ -7,7 +7,7 @@
 Two rules shape everything here.
 
 **The agent must never be made to wait.** `/v1/events` stores and acknowledges;
-processing a finished call — normalising, matching, sending WhatsApp — happens
+processing a finished call — normalising, matching, handing off — happens
 after the response, in a background task. The one exception is `/v1/vendors`,
 which a caller is genuinely waiting on, and which is therefore the only
 endpoint that touches the catalogue synchronously.
@@ -92,6 +92,7 @@ async def healthz() -> dict:
         "ok": ok,
         "problems": problems,
         "whatsapp": settings.whatsapp_available,
+        "webhook": settings.webhook_available,
         "translation": translate.available(),
     }
 
@@ -197,7 +198,7 @@ async def get_vendor(
 
     `call_id` ties the question to the call. Without it this endpoint answered
     and forgot, so a business the caller explicitly asked about never reached
-    their WhatsApp — the one thing they actually wanted was the one thing left
+    the handoff — the one thing they actually wanted was the one thing left
     out. Recorded in the background, after the reply has gone: they are waiting
     on the number, not on us filing it.
 

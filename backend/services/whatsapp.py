@@ -16,10 +16,22 @@ Configuration, all via env so a template or key change is not a code change:
   WHATSAPP_TEMPLATE_NAME  registered template id, e.g. we_found_these_for_you
   WHATSAPP_LANG_CODE      template language code (default en_US)
   WHATSAPP_PARAM4         text for {{4}} when there are no live matches yet
+  WHATSAPP_GREETING       text for {{1}}, e.g. "there Mama"
   WHATSAPP_API_URL        endpoint override
 
 Template body → positional params:
-  {{1}} name · {{2}} service · {{3}} location · {{4}} options line
+  {{1}} greeting · {{2}} service · {{3}} location · {{4}} options line
+
+{{1}} used to be the caller's name. It is a fixed greeting now — "Hi there
+Mama!" — because the name is the one field this system invents. The model is
+the transcriber on a speech-to-speech call, and on a bad line it does not fail
+loudly: it produces a fluent, plausible Indian name nobody said. One real call
+captured "Mahesh" without ever having asked for a name, greeted the caller by
+it, and would have opened their WhatsApp with it.
+
+The name is still captured, romanised, stored on the lead and scored by the
+audit — none of that changes, and the sales side reads it. What changed is that
+it no longer travels back to the person who would know it was wrong.
 """
 
 from __future__ import annotations
@@ -72,6 +84,10 @@ def build_payload(
     number = _norm_phone(phone)
     if not number:
         return None
+    # The greeting the caller reads, and the name the provider files them
+    # under, are deliberately two different things: `recipientName` is a
+    # contact record on our own CampaignBot account, {{1}} is the message.
+    greeting = settings.whatsapp_greeting.strip() or "there Mama"
     name = (name or "there").strip() or "there"
     service = (service or "the service").strip() or "the service"
     # The Vaani sender matches on city and ignores the locality; this field is
@@ -84,7 +100,7 @@ def build_payload(
         "messageType": "template",
         "templateName": settings.whatsapp_template_name,
         "languageCode": settings.whatsapp_lang_code,
-        "templateParams": [name, service, location, opts],   # {{1}}..{{4}}
+        "templateParams": [greeting, service, location, opts],   # {{1}}..{{4}}
     }
 
 

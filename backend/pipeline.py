@@ -20,7 +20,7 @@ what catches the one that got past it.
 **match** — the English service and city are matched literally against the
 vendor catalogue. Finding nothing is a valid outcome and the message says so.
 
-**notify** — the WhatsApp handoff. Its outcome is recorded on the lead, so one
+**notify** — the handoff, on both channels. Each outcome is recorded, so one
 that did not get through stays in the outbox and is retried by the worker
 rather than being lost.
 
@@ -31,11 +31,13 @@ hung up several seconds ago.
 
 from __future__ import annotations
 
+import asyncio
+
 from contract import CapturedField
 
 from .config import settings
 from .logger import get_logger
-from .services import brain, meter, translate, whatsapp
+from .services import brain, meter, translate, webhook, whatsapp
 from .services.entity_extractor import canonical_city, extract, format_name
 from .services.extraction import FOR_FIELD
 from .services.grounding import score as ground_score
@@ -98,7 +100,8 @@ async def normalise(raw: dict[str, str]) -> dict[str, str | None]:
         # Romanised, then respelled the way the city is actually written. A
         # transliterator gets the sound right and the spelling conventional
         # only by accident: "రాజమండ్రి" comes back "Rajamandri", and the lead —
-        # and the WhatsApp the caller reads — said a city that does not exist.
+        # and everything handed on downstream from it — said a city that does
+        # not exist.
         # A locality is left alone; see `canonical_city`.
         out["city"] = canonical_city(
             format_name(await translate.english_place(found.city_or_area or city))
@@ -263,7 +266,7 @@ async def process(call_id: str) -> dict | None:
     pipeline recoverable — fix the bug, replay the call_id.
     """
     # Everything below bills against this call: the Sarvam round trips and the
-    # WhatsApp send are as much a part of what a lead costs as the model is.
+    # handoff are as much a part of what a lead costs as the model is.
     # Scoped here rather than passed down, so a transliterator goes on taking a
     # string and returning one. See `services/meter.py`.
     with meter.for_call(call_id):
@@ -283,7 +286,8 @@ async def _process(call_id: str) -> dict | None:
         logger.info("call %s captured nothing; not processing an empty lead",
                     call_id[:8])
         store.upsert_call(call_id, processed_at=_now(), needs_review=False)
-        store.mark_whatsapp(call_id, False, "incomplete lead")
+        for _ch in ("whatsapp", "webhook"):
+            store.mark_handoff(call_id, _ch, False, "incomplete lead")
         return lead
 
     english = await normalise(raw)
@@ -347,18 +351,26 @@ async def _process(call_id: str) -> dict | None:
         note = f"trade understood as {inferred!r}, not stated"
         reason = f"{reason}; {note}" if reason else note
 
+    subject, skip = _what_the_message_is_about(
+        english, confidence, asked, confirmed=lead.get("confirmed") is True
+    )
+
     store.upsert_call(
         call_id,
         name=english["name"], service=english["service"],
         service_said=english.get("service_said"), city=english["city"],
         confidence=_json(confidence), needs_review=needs_review,
         review_reason=reason or None, vendors=_json(vendors),
+        # Written down, not re-derived. The sweep used to rebuild this from
+        # `service_said or service`, which is a different decision:
+        # `_what_the_message_is_about` returns the name of a business the
+        # caller asked for, and refuses to name a trade the audit cannot vouch
+        # for. A retry that guesses again says "here are some electrician
+        # options" to someone who asked for a café.
+        handoff_subject=subject or None,
         processed_at=_now(),
     )
 
-    subject, skip = _what_the_message_is_about(
-        english, confidence, asked, confirmed=lead.get("confirmed") is True
-    )
     if skip:
         # No message, so a person has to be the one who follows up. A lead we
         # cannot message is exactly the lead most likely to be forgotten —
@@ -370,7 +382,26 @@ async def _process(call_id: str) -> dict | None:
             review_reason=f"{reason}; not messaged ({skip})" if reason
                           else f"not messaged ({skip})",
         )
-        store.mark_whatsapp(call_id, False, skip)
+        store.mark_handoff(call_id, "whatsapp", False, skip)
+        # …but the webhook still gets it when there is anything to send.
+        #
+        # The guard above is about *message copy*: naming a trade we cannot
+        # vouch for to the caller is worse than saying nothing. That reasoning
+        # does not transfer to your own system, which receives the review
+        # verdict and the reason alongside the lead and can triage it. Suppress
+        # both and the leads most needing a human are the ones nobody hears
+        # about — and the channel being proven is never exercised on them.
+        #
+        # "incomplete lead" is the exception: no service was captured at all,
+        # so there is nothing to hand on, and `claim_owed_handoffs` requires
+        # `service IS NOT NULL` and could never retry it anyway.
+        if skip == "incomplete lead" or not lead.get("caller_phone"):
+            store.mark_handoff(call_id, "webhook", False, skip)
+            return store.get_lead(call_id)
+        hook = await webhook.send(store.get_lead(call_id) or {},
+                                  subject=english.get("service_said") or "",
+                                  vendors=vendors)
+        _record(call_id, "webhook", hook, detail_key="status")
         return store.get_lead(call_id)
 
     logger.info(
@@ -379,39 +410,79 @@ async def _process(call_id: str) -> dict | None:
         len(vendors), f"  REVIEW: {reason}" if needs_review else "",
     )
 
-    await notify(call_id, lead.get("caller_phone"), english, vendors, subject)
+    await notify(call_id, lead.get("caller_phone"), vendors, subject)
     return store.get_lead(call_id)
 
 
 async def notify(
-    call_id: str, phone: str | None, english: dict, vendors: list[dict],
-    subject: str,
+    call_id: str, phone: str | None, vendors: list[dict], subject: str,
 ) -> None:
-    """Hand the lead off over WhatsApp and record what happened.
+    """Hand the lead off on both channels and record each outcome separately.
 
-    `subject` fills the template's {{2}} — usually the service, but the name of
-    a business when that is what the caller asked for. See
-    `_what_the_message_is_about`.
+    `subject` is usually the service, but the name of a business when that is
+    what the caller asked for. See `_what_the_message_is_about`.
+
+    Two channels while the webhook is being proven: WhatsApp is what the caller
+    actually receives, the webhook is the one under test. They are recorded
+    against different columns and swept independently, so proving the new one
+    cannot disturb the one customers depend on.
+
+    Run concurrently and gathered with `return_exceptions=True`. The webhook is
+    pointed at a receiver nobody has exercised yet — the failure this guards
+    against is a new endpoint hanging or raising and taking the WhatsApp send
+    down with it, which would turn an experiment into an outage.
     """
     if not phone:
-        store.mark_whatsapp(call_id, False, "no phone")
+        store.mark_handoff(call_id, "whatsapp", False, "no phone")
+        store.mark_handoff(call_id, "webhook", False, "no phone")
         return
 
+    # Re-read rather than assembled from the arguments: `_process` has just
+    # written the normalised values, the confidence scores and the review
+    # verdict, and the body should carry what was stored rather than a parallel
+    # version of it that can drift.
+    lead = store.get_lead(call_id) or {}
     options = " · ".join(
         f"{v['title']} {brain.spoken_phone(v['phone'])}".strip() for v in vendors
     )
-    result = await whatsapp.send(
-        phone,
-        name=english.get("name"),
-        service=subject,
-        city=english.get("city"),
-        options=options,
+
+    wa, hook = await asyncio.gather(
+        whatsapp.send(
+            phone, name=lead.get("name"), service=subject,
+            city=lead.get("city"), options=options,
+        ),
+        webhook.send(lead, subject=subject, vendors=vendors),
+        return_exceptions=True,
     )
-    store.mark_whatsapp(
+
+    _record(call_id, "whatsapp", wa, detail_key="messageId")
+    _record(call_id, "webhook", hook, detail_key="status")
+
+
+def _record(call_id: str, channel: str, result, *, detail_key: str) -> None:
+    """Write one channel's outcome, including when it raised.
+
+    An exception here is not `pending` by accident — it is a channel that threw
+    where it promised not to, and it stays owed so the sweep tries again.
+    """
+    if isinstance(result, BaseException):
+        logger.warning("%s handoff raised for %s: %r", channel, call_id[:8], result)
+        store.mark_handoff(call_id, channel, False, repr(result)[:200])
+        return
+    detail = result.get(detail_key)
+    # `whatsapp_message_id` is TEXT and `_message_id` returns whatever the
+    # provider put in the JSON. A non-string there raises inside `mark_handoff`,
+    # which swallows it as a warning — so the outcome would go unrecorded and
+    # the lead would be swept again as though nothing had happened.
+    if detail is not None and not isinstance(detail, int):
+        detail = str(detail)
+    store.mark_handoff(
         call_id,
+        channel,
         bool(result.get("ok")),
         str(result.get("reason") or result.get("error") or ""),
-        message_id=str(result.get("messageId") or ""),
+        detail=detail,
+        terminal=bool(result.get("terminal")),
     )
 
 

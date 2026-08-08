@@ -3,7 +3,7 @@
 **Mami**, a warm local-services voice agent for Indian callers. She answers the
 phone, asks which of six languages the caller would like, collects their name,
 the service they need and their city, reads it back, and hands off a structured
-lead over WhatsApp.
+lead to the business.
 
 Languages: **English, Hindi, Bengali, Telugu, Tamil, Kannada.**
 
@@ -26,7 +26,7 @@ The agent is the UI. Everything else is backend.
      Render ────────│  BACKEND           │  FastAPI
                     │  backend/          │  normalise · audit · match · notify
                     ├────────────────────┤
-                    │  outbox sweep      │  WhatsApp retries, transcript expiry
+                    │  outbox sweep      │  handoff retries, transcript expiry
                     │  (cron, every 5m)  │  same image, own process
                     └─────────┬──────────┘
                               │
@@ -34,7 +34,7 @@ The agent is the UI. Everything else is backend.
                     │  Neon (Postgres)   │  vendors · leads · events
                     └────────────────────┘
                               │
-                     CampaignBot ─▶ WhatsApp
+        CampaignBot ─▶ WhatsApp   ·   signed webhook ─▶ your receiver
 ```
 
 | | Lines | Dependencies | Deploys to |
@@ -45,12 +45,12 @@ The agent is the UI. Everything else is backend.
 
 The test for which side a piece of code belongs on: **does the caller hear the
 difference if it is slow?** Speech, turn-taking and the vendor lookup pass.
-Translation, vendor matching, WhatsApp and Postgres do not.
+Translation, vendor matching, the handoff and Postgres do not.
 
 ### The agent holds nothing
 
 Every tool is a dictionary write plus a queued event. No database driver, no
-translation, no catalogue, no WhatsApp, no embedding model. Captured values
+translation, no catalogue, no handoff, no embedding model. Captured values
 leave **raw** — `"రవి"`, not `"Ravi"` — and the backend makes a lead of them
 after the caller has hung up.
 
@@ -171,7 +171,7 @@ curl -X POST localhost:8000/v1/events \
   -d @tests/fixtures/telugu-call.json
 ```
 
-That runs normalisation, the audit, vendor matching and the WhatsApp handoff
+That runs normalisation, the audit, vendor matching and both handoffs
 end to end. None of it was testable without dialling in before the split.
 
 ---
@@ -187,6 +187,15 @@ image, `preDeployCommand: python -m backend.migrate`.
 Migrations run **once per deploy, by one process**. They used to be issued
 lazily from inside a live call's save path, once per job process — concurrent
 DDL against Neon at the exact moment a caller was hanging up.
+
+**The handoff runs on two channels.** WhatsApp is what the caller receives;
+the webhook is being proven against a real receiver alongside it. They own
+different columns (`whatsapp_*` and `handoff_*`), are claimed separately and
+are swept separately — a lead whose message landed and whose webhook 500'd is
+owed the webhook alone, and sharing one status column would message that
+customer again to fix a problem they never had. WhatsApp retires once the
+webhook has earned it: delete a `_CHANNELS` entry, `services/whatsapp.py`, and
+those columns.
 
 The sweep is a **cron job on `*/5`**, not an always-on worker and not a task
 inside the API. It runs `python -m backend.outbox_worker --once`, which is one
@@ -204,6 +213,7 @@ Voice knobs: `OPENAI_REALTIME_VOICE`, `OPENAI_REALTIME_EAGERNESS`,
 `MAX_CALL_SECONDS`. See `agent/config.py`.
 
 **Backend** — `DATABASE_URL`, `AGENT_TOKEN`, `SARVAM_API_KEY`, `WHATSAPP_*`,
+`WEBHOOK_URL`, `WEBHOOK_SECRET`,
 `BRAIN_OWNER_ID`, `BRAIN_AGENT_ID`, `REVIEW_THRESHOLD`,
 `TRANSCRIPT_RETENTION_DAYS`. See `backend/config.py`.
 Monitoring and cost: `OPS_TOKEN`, `INR_PER_USD`, `TURN_RETENTION_DAYS` —
@@ -232,7 +242,7 @@ is faster than the machinery built to avoid it.
 **No semantic vendor search.** Matching is literal. Embedding search always
 returns its nearest neighbour, so "electrician" matched an EV charging company
 at 0.59 — a real business with a real phone number, offered to someone who
-wanted their wiring fixed. Finding nothing is a valid outcome, and the WhatsApp
+wanted their wiring fixed. Finding nothing is a valid outcome, and the webhook
 template falls back to "our team is shortlisting", which is true.
 
 **No returning-caller memory.** A prefilled name is asserted to the caller as

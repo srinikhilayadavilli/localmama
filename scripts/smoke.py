@@ -112,7 +112,7 @@ def main() -> int:
         check("/healthz responds", r.status_code == 200, f"HTTP {r.status_code}")
         check("service reports ok", body.get("ok") is True,
               "; ".join(body.get("problems") or []) or json.dumps(body))
-        print(f"    {DIM}whatsapp={body.get('whatsapp')} "
+        print(f"    {DIM}whatsapp={body.get('whatsapp')} webhook={body.get('webhook')} "
               f"translation={body.get('translation')}{RESET}")
     except Exception as exc:
         check("/healthz responds", False, repr(exc))

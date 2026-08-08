@@ -3,7 +3,7 @@
     python scripts/inspect_lead.py                 # the 10 most recent leads
     python scripts/inspect_lead.py <call_id>       # one lead, in full
     python scripts/inspect_lead.py --review        # only what needs a human
-    python scripts/inspect_lead.py --owed          # WhatsApp still owed
+    python scripts/inspect_lead.py --owed          # either channel still owed
 
 `smoke.py` proves the API accepts a call. This shows what came out the other
 end — the English values, the confidence scores, the vendors matched, and why a
@@ -36,7 +36,8 @@ def show_one(cur, call_id: str) -> None:
     cur.execute(
         "SELECT call_id, caller_phone, language, raw, name, service, city, status,"
         " confirmed, confidence, needs_review, review_reason, vendors,"
-        " whatsapp_status, whatsapp_error, started_at, ended_at, processed_at"
+        " whatsapp_status, whatsapp_error, handoff_status, handoff_error,"
+        " started_at, ended_at, processed_at"
         " FROM localmama.leads WHERE call_id = %s",
         (call_id,),
     )
@@ -45,7 +46,8 @@ def show_one(cur, call_id: str) -> None:
         print(f"No lead for {call_id!r}.")
         return
     (cid, phone, lang, raw, name, service, city, status, confirmed, confidence,
-     review, reason, vendors, wa, wa_err, started, ended, processed) = row
+     review, reason, vendors, wa, wa_err, hook, hook_err,
+     started, ended, processed) = row
 
     print(f"\n{BOLD}{cid}{RESET}   {status}"
           f"{'  ' + YELLOW + 'NEEDS REVIEW' + RESET if review else ''}")
@@ -79,7 +81,11 @@ def show_one(cur, call_id: str) -> None:
         print(f"    {DIM}none — the message falls back to 'our team is "
               f"shortlisting'{RESET}")
 
+    # Two channels while the webhook is being proven. They are separate rows
+    # of truth: WhatsApp is what the caller received, the webhook is what the
+    # receiver was told.
     print(f"\n  whatsapp   {wa}{('  ' + str(wa_err)) if wa_err else ''}")
+    print(f"  webhook    {hook}{('  ' + str(hook_err)) if hook_err else ''}")
     print(f"  timing     started={started}  ended={ended}  processed={processed}")
     if processed is None:
         print(f"    {YELLOW}! never processed — the pipeline did not run or "
@@ -90,7 +96,7 @@ def show_one(cur, call_id: str) -> None:
 def show_recent(cur, where: str = "", limit: int = 10) -> None:
     cur.execute(
         "SELECT call_id, status, name, service, city, needs_review,"
-        " whatsapp_status, created_at FROM localmama.leads"
+        " whatsapp_status, handoff_status, created_at FROM localmama.leads"
         f" {where} ORDER BY created_at DESC LIMIT %s",
         (limit,),
     )
@@ -99,12 +105,13 @@ def show_recent(cur, where: str = "", limit: int = 10) -> None:
         print("Nothing to show.")
         return
     print(f"\n  {'call_id':<26} {'status':<11} {'name':<14} {'service':<16} "
-          f"{'city':<14} {'whatsapp':<9}")
+          f"{'city':<14} {'whatsapp':<10} {'webhook':<9}")
     print(f"  {DIM}{'-' * 100}{RESET}")
-    for cid, status, name, service, city, review, wa, _ in rows:
+    for cid, status, name, service, city, review, wa, hook, _ in rows:
         flag = f" {YELLOW}!{RESET}" if review else ""
         print(f"  {cid[:24]:<26} {status or '?':<11} {(name or '—')[:12]:<14} "
-              f"{(service or '—')[:14]:<16} {(city or '—')[:12]:<14} {wa or '—':<9}{flag}")
+              f"{(service or '—')[:14]:<16} {(city or '—')[:12]:<14} "
+              f"{wa or '—':<10} {hook or '—':<9}{flag}")
     print(f"\n  {DIM}{YELLOW}!{RESET}{DIM} = needs review. "
           f"Full detail: python scripts/inspect_lead.py <call_id>{RESET}\n")
 
@@ -113,7 +120,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("call_id", nargs="?")
     parser.add_argument("--review", action="store_true", help="only flagged leads")
-    parser.add_argument("--owed", action="store_true", help="only owed WhatsApp handoffs")
+    parser.add_argument("--owed", action="store_true", help="only owed handoffs")
     parser.add_argument("--limit", type=int, default=10)
     args = parser.parse_args()
 
@@ -123,7 +130,8 @@ def main() -> int:
         elif args.review:
             show_recent(cur, "WHERE needs_review", args.limit)
         elif args.owed:
-            show_recent(cur, "WHERE whatsapp_status IN ('pending','sending')", args.limit)
+            show_recent(cur, "WHERE whatsapp_status IN ('pending','sending')"
+                            "    OR handoff_status IN ('pending','sending')", args.limit)
         else:
             show_recent(cur, "", args.limit)
     return 0
