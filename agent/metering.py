@@ -71,6 +71,47 @@ _LIVEKIT = "livekit"
 _INPUT_AUDIO_TOKENS_PER_SECOND = 10.0
 
 
+#: What the rate card calls each provider, keyed by what the framework reports.
+#:
+#: `livekit-agents` fills `provider` from the client's base URL for some
+#: plugins, so the realtime model arrives as "api.openai.com" while the
+#: transcription path — which sets it explicitly — arrives as "openai". The
+#: rate card prices "openai". A hostname prices nothing, and an unpriced unit
+#: is a real cost reported as zero: call 5467f3fb showed gpt-realtime at
+#: $0.0000 with 613 audio output tokens on it.
+_CANONICAL_PROVIDER = {
+    "api.openai.com": "openai",
+    "api.groq.com": "groq",
+    "api.deepgram.com": "deepgram",
+    "api.cartesia.ai": "cartesia",
+    "api.elevenlabs.io": "elevenlabs",
+    "api.sarvam.ai": "sarvam",
+    "generativelanguage.googleapis.com": "google",
+}
+
+
+def _canonical_provider(raw: str | None) -> str:
+    """The rate card's name for a provider, not the SDK's.
+
+    Deliberately a lookup rather than a rule. "Strip the leading api. and the
+    TLD" turns generativelanguage.googleapis.com into "googleapis", which is
+    not a provider anybody prices. An unmapped hostname is left alone and
+    logged: it will read as unpriced on the coverage line, which is the point —
+    a costing system that quietly renames things is worse than one that admits
+    it does not recognise a name.
+    """
+    name = (raw or "unknown").strip().lower()[:40]
+    if name in _CANONICAL_PROVIDER:
+        return _CANONICAL_PROVIDER[name]
+    if "." in name and name != "unknown":
+        logger.warning(
+            "meter: %r looks like a hostname and is not a known provider; its "
+            "units will price as unpriced until the map or the rate card names it",
+            name,
+        )
+    return name
+
+
 def _nonneg(value: float, what: str) -> float:
     """Clamp at zero, loudly.
 
@@ -138,7 +179,7 @@ class Meter:
         not know about is skipped instead of crashing a live call.
         """
         kind = getattr(u, "type", "")
-        provider = (getattr(u, "provider", "") or "unknown").strip().lower()[:40]
+        provider = _canonical_provider(getattr(u, "provider", ""))
         model = (getattr(u, "model", "") or "").strip()[:80]
 
         if kind == "llm_usage":
