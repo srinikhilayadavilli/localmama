@@ -141,7 +141,7 @@ def _iso(value) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else (value or None)
 
 
-def destination() -> dict | None:
+def destination(agent_id: str | None = None) -> dict | None:
     """Where this delivery goes, and what signs it — or None if nowhere.
 
     The customer's subscription wins; the environment is the fallback. Both
@@ -153,7 +153,7 @@ def destination() -> dict | None:
     """
     from .. import store
 
-    sub = store.active_webhook()
+    sub = store.active_webhook(agent_id)
     if sub and sub.get("url") and sub.get("secret"):
         return sub
     if settings.webhook_url and settings.webhook_secret:
@@ -162,11 +162,25 @@ def destination() -> dict | None:
     return None
 
 
-def configured() -> bool:
-    """Whether there is anywhere to deliver. Read by the sweep before it claims
-    anything — claiming for a channel that cannot send still burns the lead's
-    attempt budget against `OUTBOX_MAX_ATTEMPTS`."""
-    return destination() is not None
+def configured(agent_id: str | None = None) -> bool:
+    """Whether there is anywhere to deliver.
+
+    With a tenant, whether *that* tenant has an endpoint. Without one, whether
+    *anybody* does — which is what the sweep asks before it starts, since a
+    deployment where no tenant has configured a webhook should not be claiming
+    leads at all. Claiming for a channel that cannot send still burns the
+    lead's attempt budget against `OUTBOX_MAX_ATTEMPTS`.
+    """
+    if agent_id is not None:
+        return destination(agent_id) is not None
+    if settings.webhook_url and settings.webhook_secret:
+        return True
+    return bool(_store().active_agents())
+
+
+def _store():
+    from .. import store
+    return store
 
 
 def sign(body: bytes, timestamp: str, secret: str) -> str:
@@ -269,7 +283,7 @@ async def send(lead: dict, *, subject: str = "", vendors: list | None = None,
     # POSTs to an empty URL on every completed call, three times with backoff,
     # then leaves the lead pending for the sweep to retry twenty-five more
     # times — all to rediscover that no webhook is configured.
-    dest = destination()
+    dest = destination(lead.get("agent_id"))
     if dest is None:
         logger.info(
             "no webhook destination (no active subscription, and "

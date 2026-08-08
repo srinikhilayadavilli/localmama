@@ -55,14 +55,20 @@ async def drain(limit: int = 50) -> tuple[int, int]:
             logger.info("%s is not configured; skipping its sweep so leads keep "
                         "their attempts for when it is", channel)
             continue
-        s, f = await _drain_channel(channel, limit=limit)
+        # Only tenants with an endpoint, unless the environment fallback is
+        # set — in which case every tenant can be delivered for.
+        agents = None
+        if channel == "webhook" and not (settings.webhook_url and settings.webhook_secret):
+            agents = store.active_agents()
+        s, f = await _drain_channel(channel, limit=limit, agents=agents)
         sent += s
         failed += f
     return sent, failed
 
 
-async def _drain_channel(channel: str, limit: int = 50) -> tuple[int, int]:
-    owed = store.claim_owed_handoffs(channel, limit=limit)
+async def _drain_channel(channel: str, limit: int = 50,
+                         agents: list[str] | None = None) -> tuple[int, int]:
+    owed = store.claim_owed_handoffs(channel, limit=limit, agents=agents)
     if not owed:
         return 0, 0
 

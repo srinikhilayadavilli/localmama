@@ -45,8 +45,14 @@ class FakeStore:
         self.seen.update(accepted)
         return accepted, duplicates
 
-    def upsert_call(self, call_id, **fields):
+    def upsert_call(self, call_id, *, agent_id=None, **fields):
+        if agent_id:
+            fields["agent_id"] = agent_id
         self.calls.setdefault(call_id, {}).update(fields)
+
+    def agent_for_did(self, dialled):
+        """Whatever the DID maps to. The real one asks the tenants table."""
+        return {"+918071581496": "localmama"}.get(dialled, "localmama")
 
     def merge_raw(self, call_id, field, value):
         self.raw.setdefault(call_id, {})[field.value] = value

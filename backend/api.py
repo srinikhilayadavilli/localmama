@@ -130,8 +130,12 @@ async def post_events(batch: EventBatch, background: BackgroundTasks) -> EventAc
 def _apply(event, background: BackgroundTasks) -> None:  # noqa: ANN001
     """Fold one event onto its lead row."""
     if isinstance(event, CallStarted):
+        # The one event that carries the dialled number, so the one place the
+        # tenant is decided. `upsert_call` writes `agent_id` only when given,
+        # which corrects a row a `call.captured` may have created first.
         store.upsert_call(
             event.call_id,
+            agent_id=store.agent_for_did(event.dialled),
             caller_phone=event.caller_phone,
             dialled=event.dialled,
             started_at=event.started_at,

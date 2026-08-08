@@ -28,7 +28,8 @@ def env_fallback():
 def subscription(monkeypatch):
     """Control what the table returns."""
     box = {"row": None}
-    monkeypatch.setattr("backend.store.active_webhook", lambda: box["row"])
+    monkeypatch.setattr("backend.store.active_webhook",
+                        lambda agent_id=None: box["row"])
     return box
 
 

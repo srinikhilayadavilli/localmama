@@ -78,20 +78,83 @@ def record_events(events: list[Event]) -> tuple[list[str], list[str]]:
     return accepted, duplicates
 
 
-def upsert_call(call_id: str, **fields: Any) -> None:
+def agent_for_did(dialled: str | None) -> str:
+    """Which tenant answers this number. Never raises.
+
+    The number the caller rang is the routing key — a business owns its DID,
+    and that ownership is the only thing about a call that identifies whose
+    lead it is before a word is spoken.
+
+    An unmapped number falls back to `BRAIN_AGENT_ID`, which is what every
+    lead used unconditionally before tenants existed. A call arriving on a
+    number nobody has claimed is still a lead worth keeping; it just lands with
+    the default tenant rather than being dropped.
+    """
+    if not dialled or not db.available():
+        return settings.brain_agent_id
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT n.agent_id FROM localmama.tenant_numbers n"
+                "  JOIN localmama.tenants t ON t.agent_id = n.agent_id"
+                " WHERE n.did = %s AND n.active AND t.active",
+                (dialled,),
+            )
+            row = cur.fetchone()
+        if row:
+            return row[0]
+        logger.info("no tenant owns %s; filing under %s",
+                    dialled, settings.brain_agent_id)
+    except Exception as exc:  # noqa: BLE001 - a lead is worth more than routing
+        logger.warning("could not resolve the tenant for %s: %s", dialled, exc)
+    return settings.brain_agent_id
+
+
+def active_agents() -> list[str]:
+    """Tenants with somewhere to deliver a webhook. Never raises.
+
+    Used by the sweep to decide which leads are worth claiming. Claiming one
+    for a tenant with no endpoint still increments its attempt count, and
+    `OUTBOX_MAX_ATTEMPTS` is permanent.
+    """
+    if not db.available():
+        return []
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT s.agent_id FROM localmama.webhook_subscriptions s"
+                "  JOIN localmama.tenants t ON t.agent_id = s.agent_id"
+                " WHERE s.active AND t.active"
+            )
+            return [r[0] for r in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not list tenants with a webhook: %s", exc)
+        return []
+
+
+def upsert_call(call_id: str, *, agent_id: str | None = None, **fields: Any) -> None:
     """Merge fields onto a lead row, creating it if this is the first event.
 
     Events may arrive in any order — a `call.captured` can beat the
     `call.started` that names the caller — so every write is a merge and the
     row is created by whichever event turns up first.
+
+    `agent_id` is written only when given, which in practice means only by
+    `call.started`, the one event carrying the dialled number. A row created
+    early by a capture gets the default and is corrected when `call.started`
+    lands; passing it on every write would let a later event silently reassign
+    a lead to another tenant.
     """
     if not fields:
         return
     fields["updated_at"] = datetime.now().astimezone()
     columns = ["call_id", "agent_id", *fields.keys()]
-    values = [call_id, settings.brain_agent_id, *fields.values()]
+    values = [call_id, agent_id or settings.brain_agent_id, *fields.values()]
     placeholders = ", ".join(["%s"] * len(columns))
-    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in fields)
+    # `agent_id` is always inserted and only *updated* when explicitly given,
+    # which is why it is not simply another entry in `fields`.
+    on_conflict = [*fields.keys()] + (["agent_id"] if agent_id else [])
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in on_conflict)
     with db.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -365,7 +428,8 @@ def mark_handoff(call_id: str, channel: str, ok: bool, error: str = "",
 
 
 def claim_owed_handoffs(channel: str, limit: int = 50,
-                        stale_after_minutes: int = 10) -> list[dict]:
+                        stale_after_minutes: int = 10,
+                        agents: list[str] | None = None) -> list[dict]:
     """Take ownership of the handoffs owed on one channel, and return them.
 
     The sweep runs unattended, and a second worker sweeping at the same moment
@@ -403,7 +467,8 @@ def claim_owed_handoffs(channel: str, limit: int = 50,
                     f" {c['at']} = now()"
                     " WHERE call_id IN ("
                     "   SELECT call_id FROM localmama.leads"
-                    "   WHERE agent_id = %s AND caller_phone IS NOT NULL"
+                    "   WHERE (%s::text[] IS NULL OR agent_id = ANY(%s::text[]))"
+                    "     AND caller_phone IS NOT NULL"
                     "     AND processed_at IS NOT NULL AND service IS NOT NULL"
                     f"     AND {c['attempts']} < %s"
                     f"     AND ({c['status']} = 'pending'"
@@ -412,15 +477,15 @@ def claim_owed_handoffs(channel: str, limit: int = 50,
                     "   ORDER BY created_at"
                     "   FOR UPDATE SKIP LOCKED"
                     "   LIMIT %s)"
-                    " RETURNING call_id, caller_phone, dialled, language, name,"
+                    " RETURNING call_id, agent_id, caller_phone, dialled, language, name,"
                     "           service, service_said, service_inferred, city,"
                     "           status, confirmed, confidence, needs_review,"
                     "           review_reason, vendors, handoff_subject,"
                     f"           started_at, ended_at, {c['attempts']}",
-                    (settings.brain_agent_id, settings.outbox_max_attempts,
+                    (agents, agents, settings.outbox_max_attempts,
                      stale_after_minutes, limit),
                 )
-                cols = ["call_id", "caller_phone", "dialled", "language", "name",
+                cols = ["call_id", "agent_id", "caller_phone", "dialled", "language", "name",
                         "service", "service_said", "service_inferred", "city",
                         "status", "confirmed", "confidence", "needs_review",
                         "review_reason", "vendors", "handoff_subject",
@@ -453,10 +518,9 @@ def unprocessed_leads(limit: int = 50) -> list[str]:
         with db.cursor() as cur:
             cur.execute(
                 "SELECT call_id FROM localmama.leads"
-                " WHERE agent_id = %s AND ended_at IS NOT NULL"
-                "   AND processed_at IS NULL"
+                " WHERE ended_at IS NOT NULL AND processed_at IS NULL"
                 " ORDER BY created_at LIMIT %s",
-                (settings.brain_agent_id, limit),
+                (limit,),
             )
             return [r[0] for r in cur.fetchall()]
     except Exception as exc:  # noqa: BLE001 - a sweep must never kill the worker
@@ -464,7 +528,7 @@ def unprocessed_leads(limit: int = 50) -> list[str]:
         return []
 
 
-def active_webhook() -> dict | None:
+def active_webhook(agent_id: str | None = None) -> dict | None:
     """The customer's configured delivery endpoint, or None. Never raises.
 
     Read per delivery rather than cached, because the point of moving this out
@@ -485,10 +549,12 @@ def active_webhook() -> dict | None:
     try:
         with db.cursor() as cur:
             cur.execute(
-                "SELECT id, url, secret FROM localmama.webhook_subscriptions"
-                " WHERE agent_id = %s AND active"
+                "SELECT s.id, s.url, s.secret"
+                "  FROM localmama.webhook_subscriptions s"
+                "  JOIN localmama.tenants t ON t.agent_id = s.agent_id"
+                " WHERE s.agent_id = %s AND s.active AND t.active"
                 " LIMIT 1",
-                (settings.brain_agent_id,),
+                (agent_id or settings.brain_agent_id,),
             )
             row = cur.fetchone()
         return {"id": row[0], "url": row[1], "secret": row[2]} if row else None
@@ -506,10 +572,10 @@ def pending_handoffs(channel: str, limit: int = 50) -> list[dict]:
                 "SELECT call_id, caller_phone, name, service, city,"
                 f" {c['status']}, {c['attempts']}, {c['error']}"
                 " FROM localmama.leads"
-                f" WHERE agent_id = %s AND {c['status']} IN ('pending', 'sending')"
+                f" WHERE {c['status']} IN ('pending', 'sending')"
                 f"   AND caller_phone IS NOT NULL AND {c['attempts']} < %s"
                 " ORDER BY created_at LIMIT %s",
-                (settings.brain_agent_id, settings.outbox_max_attempts, limit),
+                (settings.outbox_max_attempts, limit),
             )
             cols = ["call_id", "caller_phone", "name", "service", "city",
                     "status", "attempts", "error"]
