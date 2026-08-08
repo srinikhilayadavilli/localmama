@@ -1,25 +1,35 @@
-# Cron-only blueprint — the outbox sweep, without the web service.
+# Render blueprint for the Local Mama lead backend.
 #
-# This is NOT the full deployment. The API that the agent calls is absent, so
-# nothing new is recorded while this is all that runs; the sweep will find an
-# empty backlog every five minutes. It exists to bring the sweep up on its own.
+# A web service and a cron job off one image. They are separated because their
+# failure modes are different: the API must stay responsive for the agent, and
+# the sweep does slow, retry-heavy work against a provider that is sometimes
+# down for hours. Inside the agent these shared a process with a live phone
+# call.
 #
-# The env list is inline rather than anchored, because the anchor it used lived
-# on the web service in the real render.yaml.
+# The sweep is a cron job rather than a background worker because it is not a
+# daemon — it is one pass on a timer, and it already exits cleanly after one.
+# An always-on worker bills by the month and holds a Neon connection pool
+# around the clock to sleep in; a cron job bills by the second and holds one
+# for the few seconds a pass takes.
+#
+# The agent itself is NOT here — it deploys to LiveKit Cloud.
 
 services:
-  - type: cron
-    name: localmama-outbox
+  - type: web
+    name: localmama-backend
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
-    region: singapore
+    region: singapore              # nearest Render region to ap-south LiveKit
     plan: starter
-    schedule: "*/5 * * * *"
-    dockerCommand: python -m backend.outbox_worker --once
-    envVars:
+    healthCheckPath: /healthz
+    # Once per deploy, by one process — not lazily from inside a request.
+    preDeployCommand: python -m backend.migrate
+    envVars: &backend_env
       - key: DATABASE_URL
-        sync: false                # Neon DSN — same one the deleted stack used
+        sync: false                # Neon DSN
+      - key: AGENT_TOKEN
+        generateValue: true        # the agent presents this as a bearer token
       - key: SARVAM_API_KEY
         sync: false
       - key: WHATSAPP_ENABLED
@@ -32,16 +42,50 @@ services:
         value: localmama
       - key: BRAIN_AGENT_ID
         value: localmama
-      # Read by the recovery path: `reprocess()` runs the full pipeline for any
-      # lead that ended without being processed, and that path flags fields.
       - key: REVIEW_THRESHOLD
         value: "0.75"
       - key: TRANSCRIPT_RETENTION_DAYS
         value: "30"
+      # Gates /metrics and /v1/ops/* — the unit economics. A separate secret
+      # from AGENT_TOKEN because they are different principals: the agent files
+      # leads, a scraper reads aggregates, and rotating one must not silence
+      # the other. Unset refuses the ops surface rather than opening it.
+      - key: OPS_TOKEN
+        generateValue: true
+      # Display only. Every stored price is USD, because that is what providers
+      # bill in; nothing stored is ever converted, so moving this cannot
+      # restate history.
+      - key: INR_PER_USD
+        value: "88"
+      # The per-response turn series is the largest thing the observability
+      # schema writes and its value is diagnostic, which decays in days. The
+      # usage ledger itself is never swept — it is the billing record.
       - key: TURN_RETENTION_DAYS
         value: "90"
       - key: LOG_LEVEL
         value: INFO
-      # AGENT_TOKEN and OPS_TOKEN are deliberately absent: both gate HTTP
-      # surfaces, and a cron job serves none. Minting them here would create
-      # two secrets that authorise nothing and drift from the real ones.
+
+  - type: cron
+    # Not `localmama-outbox`: that name belonged to the background worker this
+    # replaces, and for a while both existed, suspended, distinguishable only
+    # by a type badge in a list. An unreadable service list is a service list
+    # someone deletes to clear up. The cadence is in the name because the
+    # schedule below is the only place it is otherwise written down.
+    name: localmama-sweep-5m
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    region: singapore
+    # The instance size a run executes at, not a monthly reservation: a cron
+    # job is billed for the seconds it runs.
+    plan: starter
+    # The deployed sweep interval. `OUTBOX_SWEEP_SECONDS` still drives the
+    # `forever()` loop for local runs; in production this schedule is the
+    # interval, so the two are kept at the same five minutes deliberately.
+    schedule: "*/5 * * * *"
+    # `--once` and not the daemon: Render starts the container per run.
+    # Overlapping runs are safe anyway — owed rows are claimed with
+    # `FOR UPDATE SKIP LOCKED`, so two passes take disjoint batches rather
+    # than sending one customer the same message twice.
+    dockerCommand: python -m backend.outbox_worker --once
+    envVars: *backend_env
