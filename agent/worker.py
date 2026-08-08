@@ -197,10 +197,23 @@ async def run_session(ctx: JobContext, participant) -> None:  # noqa: ANN001
     def on_metrics(event) -> None:  # noqa: ANN001
         meter.on_metrics(event.metrics)
 
-    # The gap the caller actually feels. Nothing else measures it: the model
-    # does its own turn detection and audio, so LiveKit emits no EOU or TTS
-    # metrics and the one number we do get — time to first token — says only
-    # that the model started promptly, not when the caller heard anything.
+    # The most recent utterance the agent began, so the hangup can wait for the
+    # *audio* to finish rather than for a state machine to look idle.
+    #
+    # `agent_state` flickers while a realtime model is still streaming audio
+    # out, and polling it hung up four words into the goodbye — "Thank you for
+    # choosing" — with the room deleted 1.5s later. `SpeechHandle` is the
+    # framework's own answer: `wait_for_playout()` resolves when the caller has
+    # actually heard it.
+    latest_speech: dict = {}
+
+    @session.on("speech_created")
+    def on_speech(event) -> None:  # noqa: ANN001
+        handle = getattr(event, "speech_handle", None)
+        if handle is not None:
+            latest_speech["handle"] = handle
+            latest_speech["at"] = time.monotonic()
+
     last_user_turn: dict = {}
 
     @session.on("user_input_transcribed")
@@ -284,7 +297,7 @@ async def run_session(ctx: JobContext, participant) -> None:  # noqa: ANN001
                 return
             await asyncio.sleep(0.5)
 
-        started = await wait_for_outro(lambda: session.agent_state)
+        started = await wait_for_outro(lambda: session.agent_state, latest_speech)
 
         logger.info("call=%s  outro %s; hanging up after %.1fs tail", s.short(),
                     "finished" if started else "never started (timed out)",
@@ -314,41 +327,77 @@ async def run_session(ctx: JobContext, participant) -> None:  # noqa: ANN001
 OUTRO_START_WAIT = 4.0
 
 
-async def wait_for_outro(agent_state, poll: float = 0.2) -> bool:
-    """Wait for the closing line to be spoken. True if it was.
+async def wait_for_outro(agent_state, latest_speech: dict, poll: float = 0.2) -> bool:
+    """Wait for the closing line to actually be heard. True if it was.
 
     `save_lead` is called *inside the same turn as the read-back* — the model
     says "...I'll send the details to your WhatsApp" and calls the tool as part
     of the same utterance. So at save time the agent is usually already
     speaking, and that utterance is **not** the goodbye.
 
-    The first version of this waited for "speaking", found it immediately, and
-    then waited for that sentence to end — which is the read-back. It hung up a
-    second and a half later, and a real caller got two words of the outro
-    ("Local Mama") before the line dropped.
+    So: let whatever is in flight finish, wait for a *new* utterance to start,
+    and wait for that one to play out. A fixed delay cannot work — the same
+    goodbye takes longer in Telugu than the English it was timed on.
 
-    So: let whatever is in flight finish, then wait for a *new* utterance to
-    start, then wait for that one to end. A fixed delay cannot work here —
-    the same goodbye takes longer in Telugu than the English it was timed on.
+    **Playout, not `agent_state`.** This has now cut the goodbye off twice.
+    First by treating the read-back as the outro; a caller heard two words.
+    Then, after that was fixed, by polling `agent_state` for the end of the
+    outro: on the realtime path that state flickers while audio is still
+    streaming, so the poll after "speaking" saw something else and returned
+    instantly. Call 5467f3fb logged "outro finished" at the exact millisecond
+    the outro *began*, and the caller heard "Thank you for choosing" before the
+    room disappeared.
+
+    `SpeechHandle.wait_for_playout()` is the framework's own answer and it is a
+    fact rather than a sample: it resolves when the audio has left. The state
+    poll survives only as the fallback for a session that never hands us a
+    handle, where being timing-lucky beats hanging up immediately.
     """
     deadline = time.monotonic() + settings.hangup_max_wait_seconds
+    at_save = latest_speech.get("at", 0.0)
 
     # 1. Whatever was in flight at save time — the read-back — finishes.
-    while time.monotonic() < deadline and agent_state() == "speaking":
-        await asyncio.sleep(poll)
+    in_flight = latest_speech.get("handle")
+    if in_flight is not None:
+        await _played_out(in_flight, deadline)
+    else:
+        while time.monotonic() < deadline and agent_state() == "speaking":
+            await asyncio.sleep(poll)
 
-    # 2. The goodbye begins. Bounded tighter than the backstop: if the model
-    #    is not going to speak again, waiting 25s is 25s of dead air.
+    # 2. The goodbye begins: a *new* handle, not the one we just waited on.
+    #    Bounded tighter than the backstop — if the model is not going to speak
+    #    again, waiting 25s is 25s of dead air on a metered line.
     start_by = min(deadline, time.monotonic() + OUTRO_START_WAIT)
-    while time.monotonic() < start_by and agent_state() != "speaking":
+    while time.monotonic() < start_by and latest_speech.get("at", 0.0) <= at_save:
         await asyncio.sleep(poll)
-    if agent_state() != "speaking":
-        return False
+    outro = latest_speech.get("handle")
+    if latest_speech.get("at", 0.0) <= at_save or outro is None:
+        # No new utterance. Fall back to the old signal in case this session
+        # never emits handles at all, rather than assuming silence.
+        if agent_state() != "speaking":
+            return False
+        while time.monotonic() < deadline and agent_state() == "speaking":
+            await asyncio.sleep(poll)
+        return True
 
-    # 3. And ends.
-    while time.monotonic() < deadline and agent_state() == "speaking":
-        await asyncio.sleep(poll)
+    # 3. And is heard.
+    await _played_out(outro, deadline)
     return True
+
+
+async def _played_out(handle, deadline: float) -> None:
+    """Wait for one utterance to reach the caller, bounded by the backstop.
+
+    Never raises: a handle that errors or a framework that changes shape must
+    cost the tail of a goodbye, not a call that never hangs up.
+    """
+    remaining = max(0.0, deadline - time.monotonic())
+    try:
+        await asyncio.wait_for(handle.wait_for_playout(), timeout=remaining)
+    except asyncio.TimeoutError:
+        logger.warning("outro still playing after the backstop; ending anyway")
+    except Exception as exc:  # noqa: BLE001 - fall through to the hangup
+        logger.warning("could not wait for playout (%s); ending anyway", exc)
 
 
 async def _end_room(ctx: JobContext, sid: str) -> None:
